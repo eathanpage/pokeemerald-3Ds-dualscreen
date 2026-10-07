@@ -94,6 +94,9 @@ void CtrSettings_SetInt(const char *key, int value);
 /* Fast-forward: game frames per shown frame, 1 to 4 (OPTIONS, ZR/ZL). */
 int CtrSettings_Speed(void);
 void CtrSettings_StepSpeed(int direction, bool wrap);
+/* The online relay server (settings.txt, online_server=); "" when online play
+ * is off. Only changed by editing the file. */
+const char *CtrSettings_OnlineServer(void);
 /* False on a fast-forwarded frame that is not shown: the sound engine skips
  * it, so music and effects keep their own speed (3ds_sound.c). */
 bool CtrPlatform_SoundTick(void);

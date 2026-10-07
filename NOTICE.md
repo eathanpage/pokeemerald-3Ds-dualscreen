@@ -26,6 +26,8 @@ only the original Pokémon Emerald 3Ds Dual Screen work.
 ## Libraries used by the build
 
 - **libctru, citro2d, citro3d** (devkitPro), zlib licence — linked into the 3DSX.
+- **Mbed TLS** (devkitPro portlib `3ds-mbedtls`), Apache License 2.0 — linked
+  into the 3DSX for online play's secure connection.
 - **devkitARM / GCC / newlib** — toolchain and C library.
 
 ## Bundled with the Windows builder

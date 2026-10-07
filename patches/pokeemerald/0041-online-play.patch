@@ -1,0 +1,1387 @@
+Pokémon Emerald 3Ds Dual Screen changes to pret/pokeemerald 76463dac15cad36aca5e2b3f6366abf9e53f814f: online play
+Applies after 0040-bw-sprites.patch; apply with tools/bootstrap.py.
+
+diff --git a/data/event_scripts.s b/data/event_scripts.s
+index ba6f55c..4518b69 100644
+--- a/data/event_scripts.s
++++ b/data/event_scripts.s
+@@ -51,6 +51,7 @@
+ #include "constants/trainer_hill.h"
+ #include "constants/trainers.h"
+ #include "constants/tv.h"
++#include "constants/online.h"
+ #include "constants/union_room.h"
+ #include "constants/vars.h"
+ #include "constants/weather.h"
+diff --git a/data/maps/BattleFrontier_BattleTowerLobby/scripts.inc b/data/maps/BattleFrontier_BattleTowerLobby/scripts.inc
+index c0ad07a..52680b7 100644
+--- a/data/maps/BattleFrontier_BattleTowerLobby/scripts.inc
++++ b/data/maps/BattleFrontier_BattleTowerLobby/scripts.inc
+@@ -371,6 +371,11 @@ BattleFrontier_BattleTowerLobby_EventScript_AskEnterLinkMultisChallenge::
+ 	case MULTI_B_PRESSED, BattleFrontier_BattleTowerLobby_EventScript_CancelChallenge
+ 
+ BattleFrontier_BattleTowerLobby_EventScript_TryEnterLinkMultisChallenge::
++	@ Link multi battles online need an online room (made or joined here).
++	setvar VAR_0x800A, ONLINE_KIND_BATTLE_TOWER
++	call CableClub_EventScript_OnlineRoom
++	specialvar VAR_RESULT, OnlineRoom_CanEnter
++	goto_if_eq VAR_RESULT, FALSE, BattleFrontier_BattleTowerLobby_EventScript_CancelChallenge
+ 	setvar VAR_FRONTIER_BATTLE_MODE, FRONTIER_MODE_LINK_MULTIS
+ 	message BattleFrontier_BattleTowerLobby_Text_WhichLevelMode
+ 	waitmessage
+diff --git a/data/maps/LilycoveCity_ContestLobby/scripts.inc b/data/maps/LilycoveCity_ContestLobby/scripts.inc
+index 26a6f9e..98bfe63 100644
+--- a/data/maps/LilycoveCity_ContestLobby/scripts.inc
++++ b/data/maps/LilycoveCity_ContestLobby/scripts.inc
+@@ -631,6 +631,11 @@ LilycoveCity_ContestLobby_EventScript_AskEnterLinkContest::
+ 	end
+ 
+ LilycoveCity_ContestLobby_EventScript_TryEnterLinkContest::
++	@ Link contests online need an online room (made or joined here).
++	setvar VAR_0x800A, ONLINE_KIND_CONTEST
++	call CableClub_EventScript_OnlineRoom
++	specialvar VAR_RESULT, OnlineRoom_CanEnter
++	goto_if_eq VAR_RESULT, FALSE, LilycoveCity_ContestLobby_EventScript_CancelLinkContest
+ 	msgbox LilycoveCity_ContestLobby_Text_ProgressWillBeSaved, MSGBOX_YESNO
+ 	goto_if_eq VAR_RESULT, NO, LilycoveCity_ContestLobby_EventScript_CancelLinkContest
+ 	call Common_EventScript_SaveGame
+diff --git a/data/scripts/berry_blender.inc b/data/scripts/berry_blender.inc
+index db9f0eb..592f348 100644
+--- a/data/scripts/berry_blender.inc
++++ b/data/scripts/berry_blender.inc
+@@ -547,6 +547,11 @@ BerryBlender_EventScript_BerryBlenderLink::
+ 	end
+ 
+ BerryBlender_EventScript_LinkBlenderSaveGame:
++	@ Blending with others online needs an online room (made or joined here).
++	setvar VAR_0x800A, ONLINE_KIND_BERRY_BLENDER
++	call CableClub_EventScript_OnlineRoom
++	specialvar VAR_RESULT, OnlineRoom_CanEnter
++	goto_if_eq VAR_RESULT, FALSE, BerryBlender_EventScript_CancelLinkBlender
+ 	msgbox BerryBlender_Text_SaveGameBeforeBerryBlenderLink, MSGBOX_YESNO
+ 	goto_if_eq VAR_RESULT, YES, BerryBlender_EventScript_TryDoLinkBlender
+ 	goto_if_eq VAR_RESULT, NO, BerryBlender_EventScript_CancelLinkBlender
+diff --git a/data/scripts/cable_club.inc b/data/scripts/cable_club.inc
+index 50b0c8e..65981f3 100644
+--- a/data/scripts/cable_club.inc
++++ b/data/scripts/cable_club.inc
+@@ -858,8 +858,20 @@ CableClub_EventScript_UnionRoomAttendant::
+ 	specialvar VAR_RESULT, IsBadEggInParty
+ 	goto_if_eq VAR_RESULT, TRUE, CableClub_EventScript_AbortLinkPlayerHasBadEgg
+ 	copyvar VAR_0x8007, VAR_LAST_TALKED
++	@ Turned away (two POKeMON needed, no ENIGMA BERRY) before any online
++	@ room is made or joined, so nobody is left waiting in a room this
++	@ player cannot use.
++	call CableClub_EventScript_CheckPartyUnionRoomRequirements
++	goto_if_eq VAR_RESULT, 0, CableClub_EventScript_AbortLink
++	setvar VAR_0x800A, ONLINE_KIND_UNION_ROOM
++	call CableClub_EventScript_OnlineRoom
++	@ No way in without an online room (when online play is set up).
++	specialvar VAR_RESULT, OnlineRoom_CanEnter
++	goto_if_eq VAR_RESULT, FALSE, CableClub_EventScript_AbortLink
+ 	specialvar VAR_RESULT, IsWirelessAdapterConnected
+ 	goto_if_eq VAR_RESULT, FALSE, CableClub_EventScript_UnionRoomAdapterNotConnected
++	@ Just made or joined an online room: straight to saving and going in.
++	goto_if_eq VAR_0x8009, TRUE, CableClub_EventScript_EnterUnionRoom
+ 	message CableClub_Text_WelcomeUnionRoomEnter
+ 	waitmessage
+ 	goto CableClub_EventScript_UnionRoomSelect
+@@ -951,6 +963,154 @@ CableClub_EventScript_DontAskAboutLinking::
+ 	release
+ 	return
+ 
++@ Online play: which online room to meet other players in. Players
++@ in the same room find each other through the wireless features as if they
++@ were next to each other. See src/online_room.c.
++@ VAR_0x800A: the counter (ONLINE_KIND_*), whose rooms are the only ones
++@ made or joined here. VAR_0x8009 is TRUE afterwards if the player made or
++@ joined a room.
++CableClub_EventScript_OnlineRoom::
++	setvar VAR_0x8009, FALSE
++	specialvar VAR_RESULT, OnlineRoom_IsEnabled
++	goto_if_eq VAR_RESULT, FALSE, CableClub_EventScript_OnlineRoomEnd
++CableClub_EventScript_OnlineRoomMenu::
++	specialvar VAR_RESULT, OnlineRoom_BufferCode
++	goto_if_eq VAR_RESULT, ONLINE_ROOM_IN, CableClub_EventScript_OnlineInRoomMenu
++	message CableClub_Text_OnlineNoRoom
++	waitmessage
++	multichoice 18, 6, MULTI_ONLINE_NO_ROOM, FALSE
++	switch VAR_RESULT
++	case 0, CableClub_EventScript_OnlineNewRoom
++	case 1, CableClub_EventScript_OnlineJoinRoom
++	goto CableClub_EventScript_AbortLink @ No thanks / B: that's all
++CableClub_EventScript_OnlineRoomEnd::
++	return
++
++CableClub_EventScript_OnlineInRoomMenu::
++	message CableClub_Text_OnlineRoom
++	waitmessage
++	multichoice 16, 4, MULTI_ONLINE_ROOM, FALSE
++	switch VAR_RESULT
++	case 1, CableClub_EventScript_OnlineJoinRoom
++	case 2, CableClub_EventScript_OnlineNewRoom
++	case 3, CableClub_EventScript_OnlineLeaveRoom
++	return
++
++CableClub_EventScript_OnlineLeaveRoom::
++	special OnlineRoom_Leave
++	msgbox CableClub_Text_OnlineLeftRoom, MSGBOX_DEFAULT
++	goto CableClub_EventScript_AbortLink
++
++CableClub_EventScript_OnlineJoinRoom::
++	special OnlineRoom_EnterCode
++	waitstate
++	specialvar VAR_RESULT, OnlineRoom_JoinEnteredCode
++	goto_if_eq VAR_RESULT, 0, CableClub_EventScript_OnlineRoomMenu
++	goto_if_eq VAR_RESULT, 2, CableClub_EventScript_OnlineInvalidCode
++	message CableClub_Text_OnlineConnecting
++	waitmessage
++	special OnlineRoom_Wait
++	waitstate
++	goto_if_eq VAR_RESULT, ONLINE_ROOM_IN, CableClub_EventScript_OnlineJoinedRoom
++	goto CableClub_EventScript_OnlineRoomFailed
++
++CableClub_EventScript_OnlineJoinedRoom::
++	setvar VAR_0x8009, TRUE
++	return
++
++CableClub_EventScript_OnlineInvalidCode::
++	msgbox CableClub_Text_OnlineInvalidCode, MSGBOX_DEFAULT
++	goto CableClub_EventScript_OnlineRoomMenu
++
++CableClub_EventScript_OnlineNewRoom::
++	special OnlineRoom_New
++	message CableClub_Text_OnlineConnecting
++	waitmessage
++	special OnlineRoom_Wait
++	waitstate
++CableClub_EventScript_OnlineRoomFailed::
++	switch VAR_RESULT
++	case ONLINE_ROOM_IN, CableClub_EventScript_OnlineInRoom
++	case ONLINE_ROOM_NOT_FOUND, CableClub_EventScript_OnlineRoomNotFound
++	case ONLINE_ROOM_BAD_CODE, CableClub_EventScript_OnlineRoomNotFound
++	case ONLINE_ROOM_FULL, CableClub_EventScript_OnlineRoomFull
++	case ONLINE_ROOM_OLD_VERSION, CableClub_EventScript_OnlineOldVersion
++	case ONLINE_ROOM_OTHER_VERSION, CableClub_EventScript_OnlineOtherVersion
++	case ONLINE_ROOM_WRONG_KIND, CableClub_EventScript_OnlineWrongKind
++	msgbox CableClub_Text_OnlineNoServer, MSGBOX_DEFAULT
++	goto CableClub_EventScript_OnlineRoomMenu
++
++CableClub_EventScript_OnlineInRoom::
++	msgbox CableClub_Text_OnlineInRoom, MSGBOX_DEFAULT
++	setvar VAR_0x8009, TRUE
++	return
++
++CableClub_EventScript_OnlineRoomNotFound::
++	msgbox CableClub_Text_OnlineRoomNotFound, MSGBOX_DEFAULT
++	goto CableClub_EventScript_OnlineRoomMenu
++
++CableClub_EventScript_OnlineRoomFull::
++	msgbox CableClub_Text_OnlineRoomFull, MSGBOX_DEFAULT
++	goto CableClub_EventScript_OnlineRoomMenu
++
++CableClub_EventScript_OnlineWrongKind::
++	msgbox CableClub_Text_OnlineWrongKind, MSGBOX_DEFAULT
++	goto CableClub_EventScript_OnlineRoomMenu
++
++CableClub_EventScript_OnlineOldVersion::
++	msgbox CableClub_Text_OnlineOldVersion, MSGBOX_DEFAULT
++	goto CableClub_EventScript_OnlineRoomMenu
++
++CableClub_EventScript_OnlineOtherVersion::
++	msgbox CableClub_Text_OnlineOtherVersion, MSGBOX_DEFAULT
++	goto CableClub_EventScript_OnlineRoomMenu
++
++CableClub_Text_OnlineNoRoom:
++	.string "Would you like to play online?\n"
++	.string "Make a room or join a friend's.$"
++
++CableClub_Text_OnlineRoom:
++	.string "Your online room: {STR_VAR_1}.\n"
++	.string "Which room would you like to use?$"
++
++CableClub_Text_OnlineLeftRoom:
++	.string "You left the online room.$"
++
++CableClub_Text_OnlineConnecting:
++	.string "Connecting…$"
++
++CableClub_Text_OnlineInRoom:
++	.string "You're in online room {STR_VAR_1}.\p"
++	.string "Tell your friends this code so they\n"
++	.string "can join you!$"
++
++CableClub_Text_OnlineRoomNotFound:
++	.string "There's no online room with that\n"
++	.string "code. Please check it and try again.$"
++
++CableClub_Text_OnlineInvalidCode:
++	.string "That isn't a room code. Codes are six\n"
++	.string "letters and numbers, like K7Q4MD.$"
++
++CableClub_Text_OnlineWrongKind:
++	.string "That code is for the {STR_VAR_2}.\n"
++	.string "Please use it at that counter.$"
++
++CableClub_Text_OnlineRoomFull:
++	.string "That online room is full.$"
++
++CableClub_Text_OnlineOldVersion:
++	.string "The online server needs a newer\n"
++	.string "version of the game.$"
++
++CableClub_Text_OnlineOtherVersion:
++	.string "The players in that room have a\n"
++	.string "different version of the game.$"
++
++CableClub_Text_OnlineNoServer:
++	.string "Couldn't reach the online server.\p"
++	.string "Please check your connection.$"
++
+ CableClub_EventScript_DirectCornerAttendant::
+ 	lock
+ 	faceplayer
+@@ -958,6 +1118,11 @@ CableClub_EventScript_DirectCornerAttendant::
+ 	goto_if_unset FLAG_SYS_POKEDEX_GET, CableClub_EventScript_WirelessClubAdjustements
+ 	specialvar VAR_RESULT, IsBadEggInParty
+ 	goto_if_eq VAR_RESULT, TRUE, CableClub_EventScript_AbortLinkPlayerHasBadEgg
++	setvar VAR_0x800A, ONLINE_KIND_DIRECT_CORNER
++	call CableClub_EventScript_OnlineRoom
++	@ No way in without an online room (when online play is set up).
++	specialvar VAR_RESULT, OnlineRoom_CanEnter
++	goto_if_eq VAR_RESULT, FALSE, CableClub_EventScript_AbortLink
+ 	specialvar VAR_RESULT, IsWirelessAdapterConnected
+ 	goto_if_eq VAR_RESULT, FALSE, CableClub_EventScript_WelcomeToCableClub
+ 	message CableClub_Text_WelcomeWhichDirectCornerRoom
+@@ -1291,6 +1456,11 @@ MossdeepCity_GameCorner_1F_EventScript_MinigameInfoExit::
+ MossdeepCity_GameCorner_1F_EventScript_OldMan2::
+ 	lock
+ 	faceplayer
++	@ The wireless minigames need an online room too (made or joined here).
++	setvar VAR_0x800A, ONLINE_KIND_GAME_CORNER
++	call CableClub_EventScript_OnlineRoom
++	specialvar VAR_RESULT, OnlineRoom_CanEnter
++	goto_if_eq VAR_RESULT, FALSE, MossdeepCity_GameCorner_1F_EventScript_AbortMinigame
+ 	message MossdeepCity_GameCorner_1F_Text_WelcomeCanYouWait
+ 	waitmessage
+ 	specialvar VAR_RESULT, IsWirelessAdapterConnected
+diff --git a/data/specials.inc b/data/specials.inc
+index 9ba7c3e..590cd6c 100644
+--- a/data/specials.inc
++++ b/data/specials.inc
+@@ -536,3 +536,11 @@ gSpecials:
+ 	def_special RemoveRecordsWindow
+ 	def_special CloseDeptStoreElevatorWindow
+ 	def_special TrySetBattleTowerLinkType
++	def_special OnlineRoom_IsEnabled
++	def_special OnlineRoom_BufferCode
++	def_special OnlineRoom_EnterCode
++	def_special OnlineRoom_JoinEnteredCode
++	def_special OnlineRoom_New
++	def_special OnlineRoom_Leave
++	def_special OnlineRoom_CanEnter
++	def_special OnlineRoom_Wait
+diff --git a/include/constants/online.h b/include/constants/online.h
+new file mode 100644
+index 0000000..90ae0be
+--- /dev/null
++++ b/include/constants/online.h
+@@ -0,0 +1,27 @@
++#ifndef GUARD_CONSTANTS_ONLINE_H
++#define GUARD_CONSTANTS_ONLINE_H
++
++// Online play (3ds_port/src/3ds_online.c): the state of joining a room, as the
++// Pokémon Center attendants' scripts see it (special Online_WaitForRoom).
++#define ONLINE_ROOM_OFF          0 // online play isn't set up (no server in the settings)
++#define ONLINE_ROOM_CONNECTING   1
++#define ONLINE_ROOM_IN           2
++#define ONLINE_ROOM_NO_SERVER    3 // can't reach the server (still trying)
++#define ONLINE_ROOM_NOT_FOUND    4 // nobody's in a room with that code
++#define ONLINE_ROOM_BAD_CODE     5
++#define ONLINE_ROOM_FULL         6
++#define ONLINE_ROOM_OLD_VERSION  7 // the server wants a newer game
++#define ONLINE_ROOM_NONE         8 // not in a room (until the player makes or joins one)
++#define ONLINE_ROOM_WRONG_KIND   9 // the code is for the other counter's rooms
++#define ONLINE_ROOM_OTHER_VERSION 10 // the players in it have another version of the game
++
++// Which counter a room is for: a code only works at the counter it was made at.
++#define ONLINE_KIND_ANY            0 // rooms given at startup (tests)
++#define ONLINE_KIND_UNION_ROOM     1
++#define ONLINE_KIND_DIRECT_CORNER  2
++#define ONLINE_KIND_GAME_CORNER    3 // Mossdeep Game Corner: Pokemon Jump, Dodrio Berry-Picking
++#define ONLINE_KIND_BERRY_BLENDER  4 // Lilycove Contest Hall's Berry Blenders
++#define ONLINE_KIND_CONTEST        5 // Lilycove Contest Hall's link contest receptionist
++#define ONLINE_KIND_BATTLE_TOWER   6 // Battle Tower link multi battles
++
++#endif // GUARD_CONSTANTS_ONLINE_H
+diff --git a/include/constants/script_menu.h b/include/constants/script_menu.h
+index c58df73..a1f08f0 100644
+--- a/include/constants/script_menu.h
++++ b/include/constants/script_menu.h
+@@ -122,6 +122,8 @@
+ #define MULTI_SLATEPORT_TENT_RULES         111
+ #define MULTI_FALLARBOR_TENT_RULES         112
+ #define MULTI_TAG_MATCH_TYPE               113
++#define MULTI_ONLINE_ROOM                  114 // src/online_room.c
++#define MULTI_ONLINE_NO_ROOM               115
+ 
+ // Lilycove SS Tidal Multichoice Selections
+ #define SSTIDAL_SELECTION_SLATEPORT        0
+diff --git a/include/librfu.h b/include/librfu.h
+index 8125d64..9799bf6 100644
+--- a/include/librfu.h
++++ b/include/librfu.h
+@@ -479,6 +479,14 @@ extern struct RfuSlotStatusUNI *gRfuSlotStatusUNI[RFU_CHILD_MAX];
+ // librfu_sio32id
+ s32 AgbRFU_checkID(u8 maxTries);
+ 
++#ifdef PLATFORM_3DS
++// The emulated Wireless Adapter (3ds_port/src/3ds_rfu_adapter.c): answers the
++// command in gSTWIStatus at once, and is there when online play is set up.
++void PortRfu_Command(void);
++s32 PortRfu_CheckID(void);
++void PortRfu_Frame(void);
++#endif
++
+ // Arguments with "bm..." specify slots of the form (0x01 << slot number) that are the object of a function operation.
+ 
+ // librfu_rfu
+diff --git a/include/naming_screen.h b/include/naming_screen.h
+index 9352764..f054f8f 100644
+--- a/include/naming_screen.h
++++ b/include/naming_screen.h
+@@ -9,6 +9,9 @@ enum {
+     NAMING_SCREEN_CAUGHT_MON,
+     NAMING_SCREEN_NICKNAME,
+     NAMING_SCREEN_WALDA,
++#ifdef PLATFORM_3DS
++    NAMING_SCREEN_ROOM_CODE, // online room code (src/online_room.c)
++#endif
+ };
+ 
+ void DoNamingScreen(u8 templateNum, u8 *destBuffer, u16 monSpecies, u16 monGender, u32 monPersonality, MainCallback returnCallback);
+diff --git a/include/online_link.h b/include/online_link.h
+new file mode 100644
+index 0000000..dd503b6
+--- /dev/null
++++ b/include/online_link.h
+@@ -0,0 +1,26 @@
++#ifndef GUARD_ONLINE_LINK_H
++#define GUARD_ONLINE_LINK_H
++
++// Online play: the link through the emulated Wireless Adapter
++// (3ds_port/src/3ds_rfu_adapter.c), connected to other players by the relay
++// server (3ds_port/src/3ds_online.c).
++
++// While linked through the online relay, battle messages go whole, straight
++// to the other players (everyone gets their own back too, in order).
++bool8 PlatformOnlineEnabled(void);    // online play is set up (a server in the settings)
++bool8 PlatformOnlineLinkActive(void);
++void PlatformOnlineBattleReset(void);
++void PlatformOnlineBattleSend(const void *data, u16 size, bool8 toSelf);
++u16 PlatformOnlineBattleRecv(void *out, u16 max); // next message, 0 if none
++// Link blocks (SendBlock) the same way: the next block from the player with
++// that index in the link layer (0 if none). The host works out the index of
++// a child's blocks with PlatformRfuPlayerIndexForSlot (link_rfu_2.c).
++void PlatformOnlineBlockSend(const void *data, u16 size);
++u16 PlatformOnlineBlockTake(u8 playerIndex, void *out, u16 max);
++u8 PlatformRfuPlayerIndexForSlot(u8 slot);
++
++// The Pokemon Center attendants' online room menu (src/online_room.c): once a
++// frame, leaves the room when the player has walked away from the counter.
++void OnlineRoom_Update(void);
++
++#endif // GUARD_ONLINE_LINK_H
+diff --git a/src/AgbRfu_LinkManager.c b/src/AgbRfu_LinkManager.c
+index b53b69c..38917f3 100644
+--- a/src/AgbRfu_LinkManager.c
++++ b/src/AgbRfu_LinkManager.c
+@@ -1,6 +1,9 @@
+ #include "global.h"
+ #include "librfu.h"
+ #include "link_rfu.h"
++#ifdef PLATFORM_3DS
++#include "online_link.h"
++#endif
+ 
+ #define RN_ACCEPT           0x01
+ #define RN_NAME_TIMER_CLEAR 0x02
+@@ -1305,6 +1308,12 @@ static void UNUSED rfu_LMAN_setLMANCallback(void (*func)(u8, u8))
+ u8 rfu_LMAN_setLinkRecovery(u8 enable_flag, u16 recovery_period)
+ {
+     u16 imeBak;
++#ifdef PLATFORM_3DS
++    // Online, a partner whose link is lost has left the room for good: no
++    // waiting 10 seconds for them to come back into range.
++    if (PlatformOnlineEnabled())
++        enable_flag = 0;
++#endif
+     if (lman.linkRecovery_enable && enable_flag == 0 && lman.linkRecoveryTimer.active)
+     {
+         return LMAN_ERROR_NOW_LINK_RECOVERY;
+diff --git a/src/battle_controllers.c b/src/battle_controllers.c
+index 602a289..2fd0b0c 100644
+--- a/src/battle_controllers.c
++++ b/src/battle_controllers.c
+@@ -13,6 +13,47 @@
+ #include "util.h"
+ #include "constants/abilities.h"
+ 
++#ifdef PLATFORM_3DS
++#include "online_link.h"
++#endif
++
++#ifdef PLATFORM_3DS
++// Online link battles (the link is through the emulated Wireless Adapter):
++// battle messages go whole through the adapter's direct channel
++// (PlatformOnlineBattleSend, 3ds_rfu_adapter.c) rather than the link layer, and
++// the link master doesn't wait for the other players to finish showing a
++// command unless it needs something back from them (see
++// ControllerCommandNeedsAnswer): everyone still shows every command, in
++// order, and catches up whenever the master waits for them (choosing an
++// action, a move, a Pokemon...).
++static bool8 sOnlineBattleLink;
++// Per battler and player: "done" messages still to come for commands the
++// master didn't wait for, to be ignored when they arrive.
++static u8 sSkippedDones[MAX_BATTLERS_COUNT][MAX_LINK_PLAYERS];
++
++// Our own answers for the engine and "done"s count straight away. Going
++// round the receive queue they could wait behind a command for the same
++// battler, which waits for that "done" (the master doesn't wait, so its
++// next command can already be there). Returns TRUE if it's been handled.
++static bool8 HandleOwnMessageNow(const u8 *msg)
++{
++    u8 battler = msg[1];
++    u16 size = msg[4] | (msg[5] << 8);
++
++    switch (msg[0])
++    {
++    case B_COMM_TO_ENGINE:
++        memcpy(gBattleBufferB[battler], msg + 8, size);
++        return TRUE;
++    case B_COMM_CONTROLLER_IS_DONE:
++        MARK_BATTLE_CONTROLLER_IDLE_FOR_PLAYER(battler, msg[8]);
++        return TRUE;
++    default:
++        return FALSE;
++    }
++}
++#endif
++
+ static EWRAM_DATA u8 sLinkSendTaskId = 0;
+ static EWRAM_DATA u8 sLinkReceiveTaskId = 0;
+ static EWRAM_DATA u8 sUnused = 0; // Debug? Never read
+@@ -708,6 +749,13 @@ static void CreateTasksForSendRecvLinkBuffers(void)
+     gTasks[sLinkReceiveTaskId].tCurrentBlock_Start    = 0;
+ 
+     sUnused = 0;
++
++#ifdef PLATFORM_3DS
++    sOnlineBattleLink = gWirelessCommType && PlatformOnlineLinkActive();
++    memset(sSkippedDones, 0, sizeof(sSkippedDones));
++    if (sOnlineBattleLink)
++        PlatformOnlineBattleReset();
++#endif
+ }
+ 
+ enum
+@@ -812,6 +860,26 @@ static void Task_HandleSendLinkBuffersData(u8 taskId)
+         }
+         break;
+     case SENDTASK_STATE_BEGIN_SEND_BLOCK:
++#ifdef PLATFORM_3DS
++        if (sOnlineBattleLink)
++        {
++            // Everything waiting goes now, each message whole.
++            while (gTasks[taskId].tCurrentBlock_Start != gTasks[taskId].tCurrentBlock_End)
++            {
++                if (gTasks[taskId].tCurrentBlock_Start >  gTasks[taskId].tCurrentBlock_End
++                 && gTasks[taskId].tCurrentBlock_Start == gTasks[taskId].tCurrentBlock_WrapFrom)
++                {
++                    gTasks[taskId].tCurrentBlock_WrapFrom = 0;
++                    gTasks[taskId].tCurrentBlock_Start    = 0;
++                    continue;
++                }
++                blockSize = (BYTE_TO_SEND(LINK_BUFF_SIZE_LO) | (BYTE_TO_SEND(LINK_BUFF_SIZE_HI) << 8)) + LINK_BUFF_DATA;
++                PlatformOnlineBattleSend(&BYTE_TO_SEND(0), blockSize, !HandleOwnMessageNow(&BYTE_TO_SEND(0)));
++                gTasks[taskId].tCurrentBlock_Start = gTasks[taskId].tCurrentBlock_Start + blockSize;
++            }
++            break;
++        }
++#endif
+         if (gTasks[taskId].tCurrentBlock_Start != gTasks[taskId].tCurrentBlock_End)
+         {
+             if (gTasks[taskId].tBlockSendDelayTimer == 0)
+@@ -862,12 +930,73 @@ static void Task_HandleSendLinkBuffersData(u8 taskId)
+ // handled uniformly unless a game specifically decides to do
+ // otherwise. Pokemon, evidently, did not specifically decide to do
+ // otherwise.
++#ifdef PLATFORM_3DS
++static void TryReceiveOnlineBattleData(void)
++{
++    static u8 msg[0x400];
++    u16 len, dataSize;
++    s32 j;
++
++    while ((len = PlatformOnlineBattleRecv(msg, sizeof(msg))) >= LINK_BUFF_DATA)
++    {
++        dataSize = msg[LINK_BUFF_SIZE_LO] | (msg[LINK_BUFF_SIZE_HI] << 8);
++        if (dataSize + LINK_BUFF_DATA > len)
++            continue;
++        if (gTasks[sLinkReceiveTaskId].tCurrentBlock_End + 9 + dataSize > 0x1000)
++        {
++            gTasks[sLinkReceiveTaskId].tCurrentBlock_WrapFrom = gTasks[sLinkReceiveTaskId].tCurrentBlock_End;
++            gTasks[sLinkReceiveTaskId].tCurrentBlock_End = 0;
++        }
++        for (j = 0; j < dataSize + LINK_BUFF_DATA; j++)
++            gLinkBattleRecvBuffer[gTasks[sLinkReceiveTaskId].tCurrentBlock_End + j] = msg[j];
++        gTasks[sLinkReceiveTaskId].tCurrentBlock_End = gTasks[sLinkReceiveTaskId].tCurrentBlock_End + dataSize + LINK_BUFF_DATA;
++    }
++}
++
++// Commands whose controller sends something back to the battle engine, or
++// that otherwise keep the players in step: the master waits for everyone to
++// finish these.
++static bool8 ControllerCommandNeedsAnswer(u8 command)
++{
++    switch (command)
++    {
++    case CONTROLLER_GETMONDATA:
++    case CONTROLLER_GETRAWMONDATA:
++    case CONTROLLER_CHOOSEACTION:
++    case CONTROLLER_YESNOBOX:
++    case CONTROLLER_CHOOSEMOVE:
++    case CONTROLLER_OPENBAG:
++    case CONTROLLER_CHOOSEPOKEMON:
++    case CONTROLLER_23:
++    case CONTROLLER_EXPUPDATE:
++    case CONTROLLER_32:
++    case CONTROLLER_TWORETURNVALUES:
++    case CONTROLLER_CHOSENMONRETURNVALUE:
++    case CONTROLLER_ONERETURNVALUE:
++    case CONTROLLER_ONERETURNVALUE_DUPLICATE:
++    case CONTROLLER_LINKSTANDBYMSG:
++    case CONTROLLER_ENDLINKBATTLE:
++        return TRUE;
++    default:
++        return FALSE;
++    }
++}
++#endif
++
+ void TryReceiveLinkBattleData(void)
+ {
+     u8 i;
+     s32 j;
+     u8 *recvBuffer;
+ 
++#ifdef PLATFORM_3DS
++    if (sOnlineBattleLink && gReceivedRemoteLinkPlayers && (gBattleTypeFlags & BATTLE_TYPE_LINK_IN_BATTLE))
++    {
++        DestroyTask_RfuIdle();
++        TryReceiveOnlineBattleData();
++        return;
++    }
++#endif
+     if (gReceivedRemoteLinkPlayers && (gBattleTypeFlags & BATTLE_TYPE_LINK_IN_BATTLE))
+     {
+         DestroyTask_RfuIdle();
+@@ -900,7 +1029,8 @@ void TryReceiveLinkBattleData(void)
+     }
+ }
+ 
+-static void Task_HandleCopyReceivedLinkBuffersData(u8 taskId)
++// Handles the next message received, if it can be now. Returns TRUE if it did.
++static bool8 ProcessReceivedLinkBuffer(u8 taskId)
+ {
+     u16 blockSize;
+     u8 battler;
+@@ -909,7 +1039,8 @@ static void Task_HandleCopyReceivedLinkBuffersData(u8 taskId)
+     #define BYTE_TO_RECEIVE(offset) \
+         gLinkBattleRecvBuffer[gTasks[taskId].tCurrentBlock_Start + offset]
+ 
+-    if (gTasks[taskId].tCurrentBlock_Start != gTasks[taskId].tCurrentBlock_End)
++    if (gTasks[taskId].tCurrentBlock_Start == gTasks[taskId].tCurrentBlock_End)
++        return FALSE;
+     {
+         if (gTasks[taskId].tCurrentBlock_Start >  gTasks[taskId].tCurrentBlock_End
+          && gTasks[taskId].tCurrentBlock_Start == gTasks[taskId].tCurrentBlock_WrapFrom)
+@@ -919,15 +1050,37 @@ static void Task_HandleCopyReceivedLinkBuffersData(u8 taskId)
+         }
+         battler = BYTE_TO_RECEIVE(LINK_BUFF_ACTIVE_BATTLER);
+         blockSize = BYTE_TO_RECEIVE(LINK_BUFF_SIZE_LO) | (BYTE_TO_RECEIVE(LINK_BUFF_SIZE_HI) << 8);
++        if (!(BYTE_TO_RECEIVE(0) == B_COMM_TO_CONTROLLER && IS_BATTLE_CONTROLLER_ACTIVE_ON_LOCAL(battler)))
+ 
+         switch (BYTE_TO_RECEIVE(0))
+         {
+         case B_COMM_TO_CONTROLLER:
+             if (IS_BATTLE_CONTROLLER_ACTIVE_ON_LOCAL(battler))
+-                return;
++                return FALSE;
++#ifdef PLATFORM_3DS
++            // The master may be ahead of us (it didn't wait): our own
++            // controller has to have finished the last command too.
++            if (sOnlineBattleLink && IS_BATTLE_CONTROLLER_ACTIVE_FOR_PLAYER(battler, GetMultiplayerId()))
++                return FALSE;
++#endif
+ 
+             memcpy(gBattleBufferA[battler], &BYTE_TO_RECEIVE(LINK_BUFF_DATA), blockSize);
+             MarkBattlerReceivedLinkData(battler);
++#ifdef PLATFORM_3DS
++            if (sOnlineBattleLink && (gBattleTypeFlags & BATTLE_TYPE_IS_MASTER)
++             && !ControllerCommandNeedsAnswer(gBattleBufferA[battler][0]))
++            {
++                // Only our own showing of it holds up the battle.
++                for (playerId = 0; playerId < GetLinkPlayerCount() && playerId < MAX_LINK_PLAYERS; playerId++)
++                {
++                    if (playerId != GetMultiplayerId() && IS_BATTLE_CONTROLLER_ACTIVE_FOR_PLAYER(battler, playerId))
++                    {
++                        MARK_BATTLE_CONTROLLER_IDLE_FOR_PLAYER(battler, playerId);
++                        sSkippedDones[battler][playerId]++;
++                    }
++                }
++            }
++#endif
+ 
+             if (!(gBattleTypeFlags & BATTLE_TYPE_IS_MASTER))
+             {
+@@ -942,16 +1095,48 @@ static void Task_HandleCopyReceivedLinkBuffersData(u8 taskId)
+             break;
+         case B_COMM_CONTROLLER_IS_DONE:
+             playerId = BYTE_TO_RECEIVE(LINK_BUFF_DATA);
++#ifdef PLATFORM_3DS
++            if (sOnlineBattleLink && playerId < MAX_LINK_PLAYERS && sSkippedDones[battler][playerId])
++            {
++                sSkippedDones[battler][playerId]--;
++                break;
++            }
++#endif
+             MARK_BATTLE_CONTROLLER_IDLE_FOR_PLAYER(battler, playerId);
+             break;
+         }
+ 
+         gTasks[taskId].tCurrentBlock_Start = gTasks[taskId].tCurrentBlock_Start + blockSize + LINK_BUFF_DATA;
+     }
++    return TRUE;
+ 
+     #undef BYTE_TO_RECEIVE
+ }
+ 
++static void Task_HandleCopyReceivedLinkBuffersData(u8 taskId)
++{
++#ifdef PLATFORM_3DS
++    // Online, everything that can be handled this frame is (through the link
++    // layer messages came a frame apart at best anyway), up to a command for
++    // a controller: it gets a frame to start before anything else, such as
++    // the master's "done" for it, which clears the flag it starts on.
++    if (sOnlineBattleLink)
++    {
++        u8 i;
++        for (i = 0; i < 32; i++)
++        {
++            s16 next = gTasks[taskId].tCurrentBlock_Start;
++            if (next > gTasks[taskId].tCurrentBlock_End && next == gTasks[taskId].tCurrentBlock_WrapFrom)
++                next = 0;
++            if (!ProcessReceivedLinkBuffer(taskId) || gLinkBattleRecvBuffer[next] == B_COMM_TO_CONTROLLER)
++                break;
++        }
++        return;
++    }
++#endif
++    ProcessReceivedLinkBuffer(taskId);
++}
++
+ #undef tInitialDelayTimer
+ #undef tState
+ #undef tCurrentBlock_WrapFrom
+diff --git a/src/data/script_menu.h b/src/data/script_menu.h
+index 7935574..4d15fa6 100644
+--- a/src/data/script_menu.h
++++ b/src/data/script_menu.h
+@@ -782,6 +782,27 @@ struct MultichoiceListStruct
+     u8 count;
+ };
+ 
++static const u8 sText_OnlineKeepRoom[] = _("KEEP THIS ROOM");
++static const u8 sText_OnlineJoinRoom[] = _("JOIN A ROOM");
++static const u8 sText_OnlineNewRoom[] = _("NEW ROOM");
++static const u8 sText_OnlineLeaveRoom[] = _("LEAVE ROOM");
++static const u8 sText_OnlineNoThanks[] = _("NO THANKS");
++
++static const struct MenuAction MultichoiceList_OnlineRoom[] =
++{
++    {sText_OnlineKeepRoom},
++    {sText_OnlineJoinRoom},
++    {sText_OnlineNewRoom},
++    {sText_OnlineLeaveRoom},
++};
++
++static const struct MenuAction MultichoiceList_OnlineNoRoom[] =
++{
++    {sText_OnlineNewRoom},
++    {sText_OnlineJoinRoom},
++    {sText_OnlineNoThanks},
++};
++
+ static const struct MultichoiceListStruct sMultichoiceLists[] =
+ {
+     [MULTI_BRINEY_ON_DEWFORD]          = MULTICHOICE(MultichoiceList_BrineyOnDewford),
+@@ -898,6 +919,8 @@ static const struct MultichoiceListStruct sMultichoiceLists[] =
+     [MULTI_SLATEPORT_TENT_RULES]       = MULTICHOICE(MultichoiceList_SlateportTentRules),
+     [MULTI_FALLARBOR_TENT_RULES]       = MULTICHOICE(MultichoiceList_FallarborTentRules),
+     [MULTI_TAG_MATCH_TYPE]             = MULTICHOICE(MultichoiceList_TagMatchType),
++    [MULTI_ONLINE_ROOM]                = MULTICHOICE(MultichoiceList_OnlineRoom),
++    [MULTI_ONLINE_NO_ROOM]             = MULTICHOICE(MultichoiceList_OnlineNoRoom),
+ };
+ 
+ const u8 *const gStdStrings[] =
+diff --git a/src/librfu_intr.c b/src/librfu_intr.c
+index 9e727a6..beab310 100644
+--- a/src/librfu_intr.c
++++ b/src/librfu_intr.c
+@@ -395,6 +395,22 @@ static void STWI_init_slave(void)
+     REG_SIOCNT = SIO_INTR_ENABLE | SIO_32BIT_MODE | SIO_57600_BPS | SIO_ENABLE;
+ }
+ 
++#ifdef PLATFORM_3DS
++static void Callback_Dummy_M(int reqCommandId, int error, void (*callbackM)())
++{
++    callbackM(reqCommandId, error);
++}
++
++static void Callback_Dummy_S(u16 reqCommandId, void (*callbackS)(u16))
++{
++    callbackS(reqCommandId);
++}
++
++static void Callback_Dummy_ID(void (*callbackId)(void))
++{
++    callbackId();
++}
++#else
+ NAKED
+ #if __STDC_VERSION__ < 202311L
+ static void Callback_Dummy_M(int reqCommandId, int error, void (*callbackM)())
+@@ -422,3 +438,4 @@ static void Callback_Dummy_ID(void (*callbackId)(void))
+     asm("bx r0");
+ #endif
+ }
++#endif
+diff --git a/src/librfu_rfu.c b/src/librfu_rfu.c
+index 6f70949..6b8a578 100644
+--- a/src/librfu_rfu.c
++++ b/src/librfu_rfu.c
+@@ -131,7 +131,6 @@ static const char str_checkMbootLL[] = "RFU-MBOOT";
+         *_dst++ = *_src++;                          \
+ } while (0)
+ 
+-#ifndef PORTABLE
+ u16 rfu_initializeAPI(u32 *APIBuffer, u16 buffByteSize, IntrFunc *sioIntrTable_p, bool8 copyInterruptToRam)
+ {
+     u16 i;
+@@ -139,9 +138,11 @@ u16 rfu_initializeAPI(u32 *APIBuffer, u16 buffByteSize, IntrFunc *sioIntrTable_p
+     const u16 *src;
+     u16 buffByteSizeMax;
+ 
++#ifndef PLATFORM_3DS // no EWRAM, and no code copied to run from RAM
+     // is in EWRAM?
+     if (((uintptr_t)APIBuffer & 0xF000000) == EWRAM_START && copyInterruptToRam)
+         return ERR_RFU_API_BUFF_ADR;
++#endif
+     // is not 4-byte aligned?
+     if ((u32)APIBuffer & 3)
+         return ERR_RFU_API_BUFF_ADR;
+@@ -196,10 +197,13 @@ u16 rfu_initializeAPI(u32 *APIBuffer, u16 buffByteSize, IntrFunc *sioIntrTable_p
+         0x60 / sizeof(u16)
+         );
+ #endif
++#ifdef PLATFORM_3DS
++    gRfuFixed->fastCopyPtr = rfu_STC_fastCopy; // no running a copy of the code
++#else
+     gRfuFixed->fastCopyPtr = (void *)gRfuFixed->fastCopyBuffer + 1;
++#endif
+     return 0;
+ }
+-#endif
+ 
+ static void rfu_STC_clearAPIVariables(void)
+ {
+@@ -382,8 +386,10 @@ void rfu_REQ_stopMode(void)
+             timerReg = &REG_TMCNT(gSTWIStatus->timerSelect);
+             *timerReg = 0;
+             *timerReg = (TIMER_ENABLE | TIMER_1024CLK) << 16;
++#ifndef PLATFORM_3DS // the emulated adapter needs no wait (and timers don't run here)
+             while (*timerReg << 16 < 262 << 16)
+                 ;
++#endif
+             *timerReg = 0;
+             STWI_set_Callback_M(rfu_CB_stopMode);
+             STWI_send_StopModeREQ();
+diff --git a/src/librfu_sio32id.c b/src/librfu_sio32id.c
+index c40bb82..c9acc1b 100644
+--- a/src/librfu_sio32id.c
++++ b/src/librfu_sio32id.c
+@@ -26,6 +26,9 @@ s32 AgbRFU_checkID(u8 maxTries)
+     vu16 *regTMCNTL;
+     s32 id;
+ 
++#ifdef PLATFORM_3DS
++    return PortRfu_CheckID(); // the emulated adapter, if online play is set up
++#endif
+     // Interrupts must be enabled
+     if (REG_IME == 0)
+         return -1;
+diff --git a/src/librfu_stwi.c b/src/librfu_stwi.c
+index 13a7e34..b89ab2c 100644
+--- a/src/librfu_stwi.c
++++ b/src/librfu_stwi.c
+@@ -15,6 +15,10 @@ void STWI_init_all(struct RfuIntrStruct *interruptStruct, IntrFunc *interrupt, b
+     // If we're copying our interrupt into RAM, DMA it to block1 and use
+     // block2 for our STWIStatus, otherwise block1 holds the STWIStatus.
+     // interrupt usually is a pointer to gIntrTable[1]
++#ifdef PLATFORM_3DS
++    // No serial interrupts on the 3DS (see STWI_start_Command), and no code to copy.
++    copyInterruptToRam = FALSE;
++#endif
+     if (copyInterruptToRam == TRUE)
+     {
+         *interrupt = (IntrFunc)interruptStruct->block1;
+@@ -66,8 +70,10 @@ void AgbRFU_SoftReset(void)
+     *timerH = 0;
+     *timerL = 0;
+     *timerH = TIMER_ENABLE | TIMER_1024CLK;
++#ifndef PLATFORM_3DS // no wireless adapter; this would spin on a hardware timer
+     while (*timerL <= 0x11)
+         REG_RCNT = 0x80A2;
++#endif
+     *timerH = 3;
+     REG_RCNT = 0x80A0;
+     REG_SIOCNT = SIO_INTR_ENABLE | SIO_32BIT_MODE | SIO_115200_BPS;
+@@ -597,6 +603,13 @@ static s32 STWI_start_Command(void)
+     // equivalent to gSTWIStatus->txPacket->rfuPacket32.command,
+     // but the cast here is required to avoid register issue
+     *(u32 *)gSTWIStatus->txPacket->rfuPacket8.data = 0x99660000 | (gSTWIStatus->reqLength << 8) | gSTWIStatus->reqActiveCommand;
++#ifdef PLATFORM_3DS
++    // The emulated adapter takes the whole command and answers it, as the
++    // serial interrupt handler would after the last word.
++    (void)imeTemp;
++    PortRfu_Command();
++    return 0;
++#endif
+     REG_SIODATA32 = gSTWIStatus->txPacket->rfuPacket32.command;
+     gSTWIStatus->state = 0; // master send req
+     gSTWIStatus->reqNext = 1;
+diff --git a/src/link.c b/src/link.c
+index 4703ed0..65faa7a 100644
+--- a/src/link.c
++++ b/src/link.c
+@@ -27,6 +27,9 @@
+ #include "link_rfu.h"
+ #include "constants/rgb.h"
+ #include "constants/trade.h"
++#ifdef PLATFORM_3DS
++#include "online_link.h"
++#endif
+ 
+ // Window IDs for the link error screens
+ enum {
+@@ -236,7 +239,11 @@ static const u8 sUnusedData[] = {0x00, 0xFF, 0xFE, 0xFF, 0x00};
+ 
+ bool8 IsWirelessAdapterConnected(void)
+ {
+-#ifdef PORTABLE
++#ifdef PLATFORM_3DS
++    // The emulated adapter (3ds_rfu_adapter.c) is there with online play.
++    if (!PlatformOnlineEnabled())
++        return FALSE;
++#elif defined(PORTABLE)
+     return FALSE;
+ #endif
+     SetWirelessCommType1();
+@@ -1784,12 +1791,15 @@ void LinkPlayerFromBlock(u32 who)
+         SetMainCallback2(CB2_LinkError);
+ }
+ 
+-#ifndef PORTABLE
+ // When this function returns TRUE the callbacks are skipped
+ bool8 HandleLinkConnection(void)
+ {
+     bool32 main1Failed, main2Failed;
+ 
++#ifdef PLATFORM_3DS
++    if (gWirelessCommType == 0)
++        return FALSE; // no link cable
++#endif
+     if (gWirelessCommType == 0)
+     {
+         gLinkStatus = LinkMain1(&gShouldAdvanceLinkState, gSendCmd, gRecvCmds);
+@@ -1811,7 +1821,6 @@ bool8 HandleLinkConnection(void)
+     }
+     return FALSE;
+ }
+-#endif
+ 
+ void SetWirelessCommType1(void)
+ {
+diff --git a/src/link_rfu_2.c b/src/link_rfu_2.c
+index 595e5a3..c5f817e 100644
+--- a/src/link_rfu_2.c
++++ b/src/link_rfu_2.c
+@@ -17,6 +17,9 @@
+ #include "text.h"
+ #include "save.h"
+ #include "mystery_gift_menu.h"
++#ifdef PLATFORM_3DS
++#include "online_link.h"
++#endif
+ 
+ enum {
+     RFUSTATE_INIT,
+@@ -326,7 +329,6 @@ void InitRFU(void)
+     REG_IME = INTR_FLAG_VBLANK;
+ }
+ 
+-#ifndef PORTABLE
+ void InitRFUAPI(void)
+ {
+     if (!rfu_initializeAPI((void *)gRfuAPIBuffer, sizeof(gRfuAPIBuffer), &gIntrTable[1], TRUE))
+@@ -338,7 +340,6 @@ void InitRFUAPI(void)
+         rfu_setTimerInterrupt(3, &gIntrTable[2]);
+     }
+ }
+-#endif
+ 
+ static void Task_ParentSearchForChildren(u8 taskId)
+ {
+@@ -1074,11 +1075,53 @@ void Rfu_SetBerryBlenderLinkCallback(void)
+         gRfu.callback = Rfu_BerryBlenderSendHeldKeys;
+ }
+ 
++#ifdef PLATFORM_3DS
++// Where a host's link layer puts the data of the child in this slot (see
++// RfuMain2_Parent): online, a child's blocks are filed there too.
++u8 PlatformRfuPlayerIndexForSlot(u8 slot)
++{
++    return slot < RFU_CHILD_MAX ? gRfu.linkPlayerIdx[slot] : 0;
++}
++
++// Blocks that came whole over the online link (see Rfu_InitBlockSend): each
++// player's next one arrives as if it had come in frames, once the game has
++// dealt with their last (frames that came meanwhile would have been lost).
++static void TakeOnlineBlocks(void)
++{
++    u8 i, count;
++    u16 size;
++
++    for (i = 0; i < MAX_RFU_PLAYERS; i++)
++    {
++        if (gRfu.recvBlock[i].receiving != RECV_STATE_READY)
++            continue;
++        size = PlatformOnlineBlockTake(i, gBlockRecvBuffer[i], sizeof(gBlockRecvBuffer[i]));
++        if (size == 0)
++            continue;
++        count = (size + COMM_SLOT_LENGTH - 3) / (COMM_SLOT_LENGTH - 2);
++        if (count >= ARRAY_COUNT(sAllBlocksReceived))
++            count = ARRAY_COUNT(sAllBlocksReceived) - 1;
++        gRfu.recvBlock[i].count = count;
++        gRfu.recvBlock[i].next = count - 1;
++        gRfu.recvBlock[i].owner = i;
++        gRfu.recvBlock[i].receivedFlags = sAllBlocksReceived[count];
++        gRfu.recvBlock[i].receiving = RECV_STATE_FINISHED;
++        gRfu.blockReceived[i] = FALSE;
++        Rfu_SetBlockReceivedFlag(i);
++        if (GetHostRfuGameData()->activity == (ACTIVITY_CHAT | IN_UNION_ROOM) && gReceivedRemoteLinkPlayers && gRfu.parentChild == MODE_CHILD)
++            ValidateAndReceivePokemonSioInfo(gBlockRecvBuffer);
++    }
++}
++#endif
++
+ static void RfuHandleReceiveCommand(u8 unused)
+ {
+     u16 i;
+     u16 j;
+ 
++#ifdef PLATFORM_3DS
++    TakeOnlineBlocks();
++#endif
+     for (i = 0; i < MAX_RFU_PLAYERS; i++)
+     {
+         switch (gRecvCmds[i][0] & RFUCMD_MASK)
+@@ -1300,6 +1343,18 @@ bool32 Rfu_InitBlockSend(const u8 *src, size_t size)
+         sRfuDebug.blockSendTime++;
+         return FALSE;
+     }
++#ifdef PLATFORM_3DS
++    if (PlatformOnlineLinkActive())
++    {
++        // Online, the block goes whole (3ds_port/src/3ds_rfu_adapter.c) instead of 12
++        // bytes a frame with a child waiting for the host to echo it, which
++        // costs a round trip or two over the internet. It's sent at once.
++        if (size > BLOCK_BUFFER_SIZE)
++            size = BLOCK_BUFFER_SIZE;
++        PlatformOnlineBlockSend(src, size);
++        return TRUE;
++    }
++#endif
+     r4 = (size % 12) != 0;
+     gRfu.sendBlock.owner = GetMultiplayerId();
+     gRfu.sendBlock.sending = TRUE;
+diff --git a/src/main.c b/src/main.c
+index 8d6ae75..582777c 100644
+--- a/src/main.c
++++ b/src/main.c
+@@ -129,7 +129,7 @@ void AgbMain(void)
+     PORT_BOOT_STEP(0xA005);
+     EnableVCountIntrAtLine150();
+     PORT_BOOT_STEP(0xA006);
+-#ifndef PORTABLE
++#if !defined(PORTABLE) || defined(PLATFORM_3DS)
+     InitRFU();
+ #endif
+     RtcInit();
+@@ -184,9 +184,7 @@ void AgbMain(void)
+          && JOY_HELD_RAW(A_BUTTON)
+          && JOY_HELD_RAW(B_START_SELECT) == B_START_SELECT)
+         {
+-#ifndef PORTABLE
+-            // No wireless adapter on the port: rfu_initializeAPI is a stub, and
+-            // stopping the adapter read through its unset state (gSTWIStatus).
++#if !defined(PORTABLE) || defined(PLATFORM_3DS)
+             rfu_REQ_stopMode();
+             rfu_waitREQComplete();
+ #endif
+diff --git a/src/naming_screen.c b/src/naming_screen.c
+index 3bb0bc5..00316ad 100644
+--- a/src/naming_screen.c
++++ b/src/naming_screen.c
+@@ -1733,6 +1733,9 @@ static void (*const sDrawTextEntryBoxFuncs[])(void) =
+     [NAMING_SCREEN_CAUGHT_MON] = DrawMonTextEntryBox,
+     [NAMING_SCREEN_NICKNAME]   = DrawMonTextEntryBox,
+     [NAMING_SCREEN_WALDA]      = DrawNormalTextEntryBox,
++#ifdef PLATFORM_3DS
++    [NAMING_SCREEN_ROOM_CODE]  = DrawNormalTextEntryBox,
++#endif
+ };
+ 
+ static void DrawTextEntryBox(void)
+@@ -2135,6 +2138,21 @@ static const struct NamingScreenTemplate sWaldaWordsScreenTemplate =
+     .title = gText_TellHimTheWords,
+ };
+ 
++#ifdef PLATFORM_3DS
++static const u8 sText_RoomCode[] = _("ROOM CODE?");
++
++static const struct NamingScreenTemplate sRoomCodeScreenTemplate =
++{
++    .copyExistingString = FALSE,
++    .maxChars = 6,
++    .iconFunction = 2, // PC
++    .addGenderIcon = FALSE,
++    .initialPage = KBPAGE_LETTERS_UPPER,
++    .unused = 19,
++    .title = sText_RoomCode,
++};
++#endif
++
+ static const struct NamingScreenTemplate *const sNamingScreenTemplates[] =
+ {
+     [NAMING_SCREEN_PLAYER]     = &sPlayerNamingScreenTemplate,
+@@ -2142,6 +2160,9 @@ static const struct NamingScreenTemplate *const sNamingScreenTemplates[] =
+     [NAMING_SCREEN_CAUGHT_MON] = &sMonNamingScreenTemplate,
+     [NAMING_SCREEN_NICKNAME]   = &sMonNamingScreenTemplate,
+     [NAMING_SCREEN_WALDA]      = &sWaldaWordsScreenTemplate,
++#ifdef PLATFORM_3DS
++    [NAMING_SCREEN_ROOM_CODE]  = &sRoomCodeScreenTemplate,
++#endif
+ };
+ 
+ static const struct OamData sOam_8x8 =
+diff --git a/src/online_room.c b/src/online_room.c
+new file mode 100644
+index 0000000..a7a58a7
+--- /dev/null
++++ b/src/online_room.c
+@@ -0,0 +1,241 @@
++// Online play: the Pokémon Center attendants' online room menu
++// (CableClub_EventScript_OnlineRoom in data/scripts/cable_club.inc). Players
++// in the same online room meet through the wireless features; this shows
++// which room you're in and lets you join one by its code or make a new one.
++// The connection itself is 3ds_port/src/3ds_online.c.
++
++#ifdef PLATFORM_3DS
++
++#include "global.h"
++#include "event_data.h"
++#include "main.h"
++#include "naming_screen.h"
++#include "overworld.h"
++#include "script.h"
++#include "string_util.h"
++#include "task.h"
++#include "constants/map_groups.h"
++#include "constants/characters.h"
++#include "constants/online.h"
++#include "3ds_online.h"
++#include "online_link.h"
++
++#define WAIT_FRAMES (60 * 10) // give up waiting for the server after this
++#define LEAVE_FRAMES 30       // free to walk around this long: left the room
++
++static const u8 sText_NoRoom[] = _("none");
++static const u8 sText_UnionRoom[] = _("UNION ROOM");
++static const u8 sText_DirectCorner[] = _("DIRECT CORNER");
++static const u8 sText_GameCorner[] = _("GAME CORNER");
++static const u8 sText_BerryBlender[] = _("BERRY BLENDER");
++static const u8 sText_Contest[] = _("CONTEST HALL");
++static const u8 sText_BattleTower[] = _("BATTLE TOWER");
++
++// Room codes are upper-case letters and digits (ASCII); the game has its
++// own character set.
++static void CodeToText(u8 *dest, const char *code)
++{
++    for (; *code; code++)
++    {
++        if (*code >= 'A' && *code <= 'Z')
++            *dest++ = CHAR_A + (*code - 'A');
++        else if (*code >= '0' && *code <= '9')
++            *dest++ = CHAR_0 + (*code - '0');
++    }
++    *dest = EOS;
++}
++
++static void TextToCode(char *code, const u8 *src)
++{
++    int n = 0;
++    for (; *src != EOS && n < 8; src++)
++    {
++        if (*src >= CHAR_A && *src <= CHAR_Z)
++            code[n++] = 'A' + (*src - CHAR_A);
++        else if (*src >= CHAR_a && *src <= CHAR_z)
++            code[n++] = 'A' + (*src - CHAR_a);
++        else if (*src >= CHAR_0 && *src <= CHAR_0 + 9)
++            code[n++] = '0' + (*src - CHAR_0);
++    }
++    code[n] = '\0';
++}
++
++u16 OnlineRoom_IsEnabled(void)
++{
++    char code[16];
++    return Online_GetRoom(code, sizeof(code)) != ONLINE_ROOM_OFF;
++}
++
++// The counter the script is at (VAR_0x800A, ONLINE_KIND_*): its rooms are
++// the only ones it makes or joins.
++static u8 CounterKind(void)
++{
++    return gSpecialVar_0x800A;
++}
++
++// gStringVar1: the room's code ("none" if not in one). Returns ONLINE_ROOM_*;
++// a room of the other counter's kind counts as none.
++u16 OnlineRoom_BufferCode(void)
++{
++    char code[16];
++    u8 state = Online_GetRoom(code, sizeof(code));
++    u8 kind = Online_GetRoomKind();
++    if (state == ONLINE_ROOM_IN && kind != ONLINE_KIND_ANY && kind != CounterKind())
++        state = ONLINE_ROOM_NONE;
++    if (state == ONLINE_ROOM_IN)
++        CodeToText(gStringVar1, code);
++    else
++        StringCopy(gStringVar1, sText_NoRoom);
++    return state;
++}
++
++// The naming screen's keyboard, for typing a code into gStringVar2.
++void OnlineRoom_EnterCode(void)
++{
++    gStringVar2[0] = EOS;
++    DoNamingScreen(NAMING_SCREEN_ROOM_CODE, gStringVar2, 0, 0, 0, CB2_ReturnToFieldContinueScript);
++}
++
++// Codes are made by the server: 6 of these (no 0/O, 1/I/L).
++static bool8 IsValidCode(const char *code)
++{
++    static const char sAlphabet[] = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
++    int n;
++    for (n = 0; code[n]; n++)
++        if (!strchr(sAlphabet, code[n]))
++            return FALSE;
++    return n == 6;
++}
++
++// Joins the room typed in (only if it exists). Returns 0 if nothing was
++// typed, 1 if joining, 2 if it can't be a room code.
++u16 OnlineRoom_JoinEnteredCode(void)
++{
++    char code[16];
++    TextToCode(code, gStringVar2);
++    if (code[0] == '\0')
++        return 0;
++    if (!IsValidCode(code))
++        return 2;
++    Online_JoinRoom(code, ONLINE_JOIN_ONLY, CounterKind());
++    return 1;
++}
++
++void OnlineRoom_New(void)
++{
++    Online_JoinRoom(NULL, ONLINE_JOIN_OR_CREATE, CounterKind());
++}
++
++// Whether the attendant lets the player in: with online play set up, only
++// while in an online room for this counter (without it, the missing
++// Wireless Adapter keeps them out as before).
++u16 OnlineRoom_CanEnter(void)
++{
++    char code[16];
++    u8 state = Online_GetRoom(code, sizeof(code));
++    u8 kind = Online_GetRoomKind();
++
++    if (state == ONLINE_ROOM_OFF)
++        return TRUE;
++    return state == ONLINE_ROOM_IN && (kind == ONLINE_KIND_ANY || kind == CounterKind());
++}
++
++void OnlineRoom_Leave(void)
++{
++    Online_LeaveRoom();
++}
++
++#define tFrames data[0]
++
++static void Task_WaitForRoom(u8 taskId)
++{
++    char code[16];
++    u8 state = Online_GetRoom(code, sizeof(code));
++
++    if (state == ONLINE_ROOM_CONNECTING && ++gTasks[taskId].tFrames < WAIT_FRAMES)
++        return;
++    if (state == ONLINE_ROOM_IN)
++        CodeToText(gStringVar1, code);
++    if (state == ONLINE_ROOM_WRONG_KIND)
++    {
++        switch (Online_GetRoomKind())
++        {
++        case ONLINE_KIND_UNION_ROOM:
++            StringCopy(gStringVar2, sText_UnionRoom);
++            break;
++        case ONLINE_KIND_GAME_CORNER:
++            StringCopy(gStringVar2, sText_GameCorner);
++            break;
++        case ONLINE_KIND_BERRY_BLENDER:
++            StringCopy(gStringVar2, sText_BerryBlender);
++            break;
++        case ONLINE_KIND_CONTEST:
++            StringCopy(gStringVar2, sText_Contest);
++            break;
++        case ONLINE_KIND_BATTLE_TOWER:
++            StringCopy(gStringVar2, sText_BattleTower);
++            break;
++        default:
++            StringCopy(gStringVar2, sText_DirectCorner);
++            break;
++        }
++    }
++    gSpecialVar_Result = state;
++    DestroyTask(taskId);
++    ScriptContext_Enable();
++}
++
++// Waits until the server lets us in (or doesn't); VAR_RESULT: ONLINE_ROOM_*,
++// gStringVar1: the code.
++void OnlineRoom_Wait(void)
++{
++    CreateTask(Task_WaitForRoom, 80);
++}
++
++#undef tFrames
++
++static bool8 InLinkRoom(void)
++{
++    static const u16 sLinkRooms[] = {
++        MAP_UNION_ROOM, MAP_TRADE_CENTER, MAP_RECORD_CORNER,
++        MAP_BATTLE_COLOSSEUM_2P, MAP_BATTLE_COLOSSEUM_4P,
++    };
++    u32 i;
++    for (i = 0; i < ARRAY_COUNT(sLinkRooms); i++)
++        if (gSaveBlock1Ptr->location.mapGroup == MAP_GROUP(sLinkRooms[i])
++         && gSaveBlock1Ptr->location.mapNum == MAP_NUM(sLinkRooms[i]))
++            return TRUE;
++    return FALSE;
++}
++
++// Once a frame (from the port's frame loop): the room is only for meeting
++// people through the attendant you made or joined it with, so once the
++// player is walking around outside the link rooms again (left the Union
++// Room or Trade Center, or didn't go in after all), leave it.
++void OnlineRoom_Update(void)
++{
++    static u16 sFreeFrames;
++    char code[16];
++    u8 state = Online_GetRoom(code, sizeof(code));
++
++    if (state == ONLINE_ROOM_OFF || state == ONLINE_ROOM_NONE || Online_IsRoomFixed())
++    {
++        sFreeFrames = 0;
++        return;
++    }
++    if (gMain.callback2 == CB2_Overworld && !ArePlayerFieldControlsLocked()
++     && !ScriptContext_IsEnabled() && !InLinkRoom())
++    {
++        if (++sFreeFrames >= LEAVE_FRAMES)
++        {
++            sFreeFrames = 0;
++            Online_LeaveRoom();
++        }
++    }
++    else
++    {
++        sFreeFrames = 0;
++    }
++}
++
++#endif // PLATFORM_3DS
+diff --git a/src/stub.c b/src/stub.c
+index f464d2f..d4d8321 100644
+--- a/src/stub.c
++++ b/src/stub.c
+@@ -9,8 +9,6 @@
+ #define STUB_FUNC_QUIET(func) func {}
+ #define STUB_FUNC_QUIET_BLOCK(func, block) func { block }
+ 
+-STUB_FUNC_QUIET_BLOCK(bool8 HandleLinkConnection(), return 0;)
+-STUB_FUNC_QUIET(void Task_InitUnionRoom())
+ STUB_FUNC(int MultiBoot(struct MultiBootParam *mp))
+ STUB_FUNC(void RegisterRamReset(u32 resetFlags))
+ STUB_FUNC(void IntrMain())
+@@ -55,8 +53,6 @@ STUB_FUNC(void GameCubeMultiBoot_Init())
+ STUB_FUNC(void GameCubeMultiBoot_HandleSerialInterrupt())
+ STUB_FUNC(void GameCubeMultiBoot_Quit())
+ #endif
+-STUB_FUNC(void rfu_initializeAPI())
+-STUB_FUNC(void InitRFUAPI(void))
+ /*STUB_FUNC(void rfu_STC_clearAPIVariables())
+ STUB_FUNC(void rfu_REQ_PARENT_resumeRetransmitAndChange())
+ STUB_FUNC(void rfu_UNI_PARENT_getDRAC_ACK())
+diff --git a/src/union_room.c b/src/union_room.c
+index 0ced727..7c38565 100644
+--- a/src/union_room.c
++++ b/src/union_room.c
+@@ -3312,7 +3312,6 @@ void InitUnionRoom(void)
+     sUnionRoomPlayerName[0] = EOS;
+ }
+ 
+-#ifndef PORTABLE
+ static void Task_InitUnionRoom(u8 taskId)
+ {
+     s32 i;
+@@ -3381,7 +3380,6 @@ static void Task_InitUnionRoom(u8 taskId)
+         break;
+     }
+ }
+-#endif
+ 
+ bool16 BufferUnionRoomPlayerName(void)
+ {

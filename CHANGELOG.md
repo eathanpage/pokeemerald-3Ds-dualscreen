@@ -4,6 +4,14 @@
 
 New and improved:
 
+- Online play: the Pokémon Center attendants make and join online rooms, by a
+  six-character code, and everyone in a room meets through the wireless
+  features as if their adapters were side by side: the Union Room, trades and
+  battles in the Direct Corner, the Game Corner minigames, Berry Blenders,
+  link contests and Battle Tower link multi battles. Players on the PC port
+  share the same rooms. The game emulates the Wireless Adapter over a relay
+  server (`online_server=` in `settings.txt`); fast-forward is off in a room.
+
 - Black/White sprites: every Pokémon is shown with its animated sprite from
   Pokémon Black and White, in battle, on the summary, in the Pokédex and
   wherever the game shows one, coloured as the game colours the original

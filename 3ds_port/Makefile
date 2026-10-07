@@ -42,6 +42,12 @@ SOURCES += src/3ds_data.c src/3ds_pak.c src/3ds_settings.c src/3ds_prof.c
 SOURCES += src/3ds_video.c src/3ds_video_decode.c src/3ds_bottom_screen.c
 # Black/White sprites in place of the Pokemon pictures (include/3ds_bw.h).
 SOURCES += src/3ds_bw.c
+# Online play: the connection to the relay server (include/3ds_online.h), with
+# TLS from the devkitPro portlib (3ds-mbedtls).
+SOURCES += src/3ds_online.c
+CPPFLAGS += -I$(DEVKITPRO)/portlibs/3ds/include
+LDFLAGS += -L$(DEVKITPRO)/portlibs/3ds/lib
+LIBS := -lmbedtls -lmbedx509 -lmbedcrypto $(LIBS)
 LIBS := -lcitro2d -lcitro3d $(LIBS)
 OBJECTS := $(patsubst src/%.c,build/%.o,$(SOURCES))
 GAMEFLAGS := -DPORTABLE -DPLATFORM_3DS -D__3DS__ -DMODERN=1 -DUBFIX -D__INTELLISENSE__

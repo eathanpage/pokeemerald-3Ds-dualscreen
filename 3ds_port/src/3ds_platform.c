@@ -7,6 +7,7 @@
 #include "3ds_audio.h"
 #include "3ds_video.h"
 #include "3ds_assets.h"
+#include "3ds_online.h"
 #include "voxel/ctr_voxel.h"
 /* The bottom-screen diagnostic overlay: off, and no longer toggled by SELECT.
  * The figures it showed are still logged periodically to the SD card. */
@@ -81,6 +82,8 @@ bool CtrPlatform_Init(void)
         return false;
     }
     CtrSettings_Load();
+    /* Nothing connects until the player makes or joins a room. */
+    Online_Init(CtrSettings_OnlineServer(), NULL);
     if (!CtrData_Init())
         CtrPlatform_ShowDataError(CtrData_ErrorTitle(), CtrData_ErrorDetail());
     if (!CtrVideo_Init())
@@ -202,7 +205,8 @@ static float sPresentMs = 4.0f;
 
 static bool FrameShown(uint64_t now)
 {
-    int speed = CtrSettings_Speed();
+    /* Online, everyone plays at the same speed. */
+    int speed = Online_InRoom() ? 1 : CtrSettings_Speed();
     float since = sShownTick ? (now - sShownTick) * 1000.0f / SYSCLOCK_ARM11 : FRAME_MS;
 
     if (speed <= 1 || ++sHidden >= (unsigned)speed || since + sTiming.gameMs + sPresentMs > FRAME_MS)
@@ -332,6 +336,7 @@ void CtrPlatform_Shutdown(void)
         return;
     sInitialized = false;
     CtrSettings_Shutdown();
+    Online_Shutdown();
     if (sHooks.shutdown)
         sHooks.shutdown();
     CtrVideo_Shutdown();

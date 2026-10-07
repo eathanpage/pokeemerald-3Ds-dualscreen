@@ -11,6 +11,7 @@
 #include <string.h>
 #include <3ds.h>
 #include "3ds_platform.h"
+#include "3ds_online.h"
 
 #define SETTINGS_FILE "settings.txt"
 
@@ -43,6 +44,9 @@ static bool sRunAlways = false;
  * 1 is normal speed. */
 static const int sSpeeds[] = {1, 2, 3, 4};
 static int sSpeed = 0;
+/* The online relay server (3ds_online.c): the PC port's, so the two play
+ * together. Empty: online play off. Only changed by editing the file. */
+static char sOnlineServer[128] = ONLINE_DEFAULT_SERVER;
 
 /*
  * Settings without a variable of their own (the ENHANCEMENTS and CHEATS pages,
@@ -76,7 +80,7 @@ static int Find(const int *values, int count, int value, int fallback)
 void CtrSettings_Load(void)
 {
     FILE *file = CtrFs_OpenData(SETTINGS_FILE, "r");
-    char line[64];
+    char line[160];
 
     if (file == NULL)
     {
@@ -103,6 +107,15 @@ void CtrSettings_Load(void)
             sRunAlways = line[4] == '1';
         else if (sscanf(line, "speed=%d", &value) == 1)
             sSpeed = Find(sSpeeds, COUNT(sSpeeds), value, sSpeed);
+        else if (strncmp(line, "online_server=", 14) == 0)
+        {
+            size_t length = strcspn(line + 14, "\r\n \t");
+
+            if (length >= sizeof(sOnlineServer))
+                length = sizeof(sOnlineServer) - 1;
+            memcpy(sOnlineServer, line + 14, length);
+            sOnlineServer[length] = '\0';
+        }
         else
         {
             char key[sizeof(sExtra[0].key)];
@@ -128,7 +141,7 @@ void CtrSettings_Load(void)
 static Thread sSaver;
 static LightEvent sSaveWake;
 static LightLock sSaveLock = 1;
-static char sSaveText[160 + EXTRA_KEYS * 32];
+static char sSaveText[320 + EXTRA_KEYS * 32];
 static bool sSavePending, sSaveQuit;
 
 static void WriteText(const char *text)
@@ -180,9 +193,9 @@ static void Save(void)
 
     snprintf(text, sizeof(text),
              "voxel=%d\nvoxel_pitch=%d\nvoxel_zoom=%d\nvoxel_blur=%d\nvoxel_battle=%d\nfps=%d\nrun=%d\n"
-             "speed=%d\n",
+             "speed=%d\nonline_server=%s\n",
              sVoxel ? 1 : 0, sPitches[sPitch], sZooms[sZoom], sVoxelBlur ? 1 : 0, sVoxelBattle ? 1 : 0,
-             sShowFps ? 1 : 0, sRunAlways ? 1 : 0, sSpeeds[sSpeed]);
+             sShowFps ? 1 : 0, sRunAlways ? 1 : 0, sSpeeds[sSpeed], sOnlineServer);
     for (int i = 0; i < sExtraCount; ++i)
     {
         size_t used = strlen(text);
@@ -221,6 +234,11 @@ void CtrSettings_Shutdown(void)
     threadJoin(sSaver, U64_MAX);
     threadFree(sSaver);
     sSaver = NULL;
+}
+
+const char *CtrSettings_OnlineServer(void)
+{
+    return sOnlineServer;
 }
 
 bool CtrSettings_Voxel(void)

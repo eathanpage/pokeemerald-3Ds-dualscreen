@@ -70,6 +70,8 @@ BACKEND_SRCS += src/3ds_game_full.c src/3ds_game_bridge.c src/3ds_script_loader.
 BACKEND_SRCS += src/3ds_bottom_ui.c
 # The game side of the BW sprites: the pictures as they are decompressed.
 BACKEND_SRCS += src/3ds_bw_bridge.c
+# Online play: the emulated Wireless Adapter the game's link code talks to.
+BACKEND_SRCS += src/3ds_rfu_adapter.c
 # The ENHANCEMENTS and CHEATS pages of OPTIONS (include/3ds_extras.h).
 BACKEND_SRCS += src/3ds_extras.c
 # The frame profiler times the engine's own routines through linker wrappers.

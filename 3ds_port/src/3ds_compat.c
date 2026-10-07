@@ -424,6 +424,8 @@ void CreateEReaderTask(void) { CTR_STUB("EREADER", "e-Reader link not supported"
 void CB2_InitMysteryGift(void) { CTR_STUB("MYSTERY_GIFT", "link menu not supported"); }
 void CB2_InitEReader(void) { CTR_STUB("EREADER", "e-Reader menu not supported"); }
 void CB2_InitMysteryEventMenu(void) { CTR_STUB("MYSTERY_EVENT", "link menu not supported"); }
+/* Only compared against by the wireless link code (link_rfu_2.c), never run. */
+void CB2_MysteryGiftEReader(void) { CTR_STUB("MYSTERY_GIFT", "link menu not supported"); }
 
 /*
  * Save-image verification. The GBA original relocated its comparison loop into

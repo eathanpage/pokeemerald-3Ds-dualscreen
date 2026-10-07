@@ -61,6 +61,30 @@ pictures. To keep the original pictures on purpose, pass `--no-bw-sprites` to
 `emerald3ds-builder-cli.exe build` or `install`, or delete
 `SD:/3ds/emerald3ds/bw_sprites.pack`. The web builder does not make the pack.
 
+### Online play
+
+Trade, battle and play the other wireless features with friends anywhere,
+on a 3DS or on the PC port, through an online relay server. The console needs
+its Wi-Fi connection.
+
+1. Talk to an attendant on the second floor of any Pokémon Center. Choose
+   **NEW ROOM**: the game gives you a six-character room code.
+2. Your friends talk to the same attendant, choose **JOIN A ROOM** and type
+   the code.
+3. Go in as usual: everyone in the room meets as if their adapters were next
+   to each other.
+
+Each counter has rooms of its own: the Union Room, the Direct Corner (trades
+and battles), the Mossdeep Game Corner's minigames, the Lilycove Berry
+Blenders, link contests and Battle Tower link multi battles. Fast-forward is
+off while you're in a room. Walking away from the counter leaves the room.
+
+The server is set in `SD:/3ds/emerald3ds/settings.txt` as
+`online_server=wss://pokemon.eathan.page` (the default); an empty value turns
+online play off, and `host:port` connects to a relay over plain TCP. Nothing
+private goes to the server: there are no accounts, and the game does not
+check the server's certificate.
+
 ### Sound
 
 Audio requires `dspfirm.cdc` at **`SD:/3ds/dspfirm.cdc`**, directly inside the

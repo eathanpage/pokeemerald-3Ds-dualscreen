@@ -84,6 +84,7 @@ interface on the bottom screen replaces the START menu. Enable the optional
 | **Two screens, one adventure** | The game on top, with a dedicated touch interface below in place of the START menu. |
 | **Optional voxel overworld** | Modelled buildings, trees, signposts and terrain relief, with adjustable camera angle and zoom. |
 | **Built from your own cartridge** | The builder generates the game data locally from your own dump. No ROM content is distributed. |
+| **Online play** | Trades, battles and the other wireless features with friends anywhere, on 3DS or PC, by room code ([details](docs/INSTALLATION.md#online-play)). |
 | **Black/White sprites** | Every Pokémon animated with its sprite from Black and White, downloaded by the builder at install ([details](docs/INSTALLATION.md#blackwhite-sprites)). |
 
 ### A new perspective on Hoenn

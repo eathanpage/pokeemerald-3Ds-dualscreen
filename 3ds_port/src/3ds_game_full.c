@@ -27,6 +27,7 @@
 #include "fldeff_misc.h"
 #include "battle_pyramid.h"
 #include "sprite.h"
+#include "librfu.h"
 #include "constants/party_menu.h"
 #ifdef CTR_TEST_BATTLE
 #include "battle_setup.h"
@@ -508,6 +509,8 @@ void CtrGame_VBlank(void)
      */
     if (REG_IME && (REG_IE & INTR_FLAG_VBLANK) && gIntrTable[INTR_INDEX_VBLANK])
         gIntrTable[INTR_INDEX_VBLANK]();
+    /* The emulated Wireless Adapter's "interrupts", if online (3ds_rfu_adapter.c). */
+    PortRfu_Frame();
     CtrEmu_EndVBlank();
     PORT_PROF_END(vblank, PORT_PROF_VBLANK);
     UpdateStage();
