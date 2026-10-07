@@ -34,6 +34,15 @@ only the original Pokémon Emerald 3Ds Dual Screen work.
   (BSD-style) and **Pillow** (MIT-CMU / HPND), packaged by **PyInstaller**
   (GPL 2.0 with the bootloader exception).
 
+## Black/White sprites
+
+The animated Pokémon sprites from Pokémon Black and White come from
+[PokeAPI/sprites](https://github.com/PokeAPI/sprites). They are © Nintendo,
+Game Freak and Creatures, are not included in this repository or in the
+releases, and are downloaded and converted on the player's computer by the
+builder (`builder/emerald3ds_builder/bwsprites.py`). The conversion and the
+pack format follow the PC port pokeemerald-native's `tools/bw_sprites`.
+
 ## Game content
 
 Pokémon Emerald's code, data, graphics, audio and text are © Nintendo, Game

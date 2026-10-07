@@ -10,6 +10,7 @@
 #include "3ds_video.h"
 #include "3ds_data.h"
 #include "3ds_bottom.h"
+#include "3ds_bw.h"
 #include "../compat/port_prof.h"
 
 /* Public queue passed by libctru, never a cast of Citro3D's private context.
@@ -3638,6 +3639,71 @@ static bool SpriteBatchRoom(unsigned tiles)
     return true;
 }
 
+/*
+ * A Pokemon picture drawn as its Black/White sprite (3ds_bw.h): one image in
+ * place of the OAM entry's tiles, placed in the entry's 64x64 box as the BW
+ * side says, flipped or transformed as the entry is. False to draw the tiles.
+ */
+static bool DrawBwObject(unsigned index, const uint16_t *obj, int x, int y, unsigned width, unsigned height,
+                         unsigned boxW, unsigned boxH, bool effects, bool semiTransparent)
+{
+    unsigned attr0 = obj[0], attr1 = obj[1];
+    bool affine = (attr0 & 0x100) != 0;
+    CtrBwSprite bw;
+    Tex3DS_SubTexture sub;
+
+    if (!CtrBw_Prepare(index, obj, (Reg(0) & 0x40) != 0, sMemory.vram + 0x10000, sMemory.palette + 256,
+                       sStats.frames, &bw))
+        return false;
+    SpriteBatchFlush();
+    Blend(4, effects, semiTransparent);
+    ViewBase();
+    sub.width = (u16)bw.width;
+    sub.height = (u16)bw.height;
+    sub.left = bw.u0;
+    sub.right = bw.u1;
+    sub.top = bw.v0;
+    sub.bottom = bw.v1;
+    if (affine)
+    {
+        /* The entry's own matrix, as its tiles would be drawn (DrawObjects). */
+        unsigned m = ((attr1 >> 9) & 31) * 16;
+        float a = (int16_t)sMemory.oam[m + 3] / 256.0f, b = (int16_t)sMemory.oam[m + 7] / 256.0f;
+        float c = (int16_t)sMemory.oam[m + 11] / 256.0f, d = (int16_t)sMemory.oam[m + 15] / 256.0f;
+        float det = a * d - b * c;
+        C3D_Mtx matrix;
+
+        if (fabsf(det) < 0.00001f) return true;
+        Mtx_Identity(&matrix);
+        matrix.r[0] = FVec4_New(d / det, -b / det, 0, x + CTR_VIEW_X + sLayerShift + boxW / 2.0f - (d * width - b * height) / (2 * det));
+        matrix.r[1] = FVec4_New(-c / det, a / det, 0, y + CTR_VIEW_Y + boxH / 2.0f - (a * height - c * width) / (2 * det));
+        ViewAffine(&matrix);
+        C2D_DrawImageAt((C2D_Image){(C3D_Tex *)bw.tex, &sub}, bw.left, bw.top, 0, &sTint, 1, 1);
+        ViewBase();
+    }
+    else
+    {
+        bool flipX = (attr1 & 0x1000) != 0, flipY = (attr1 & 0x2000) != 0;
+        float left = flipX ? 64 - bw.left - bw.width : bw.left;
+        float top = flipY ? 64 - bw.top - bw.height : bw.top;
+
+        if (flipX)
+        {
+            sub.left = bw.u1;
+            sub.right = bw.u0;
+        }
+        if (flipY)
+        {
+            sub.top = bw.v1;
+            sub.bottom = bw.v0;
+        }
+        C2D_DrawImageAt((C2D_Image){(C3D_Tex *)bw.tex, &sub}, x + CTR_VIEW_X + sLayerShift + left,
+                        y + CTR_VIEW_Y + top, 0, &sTint, 1, 1);
+    }
+    ++sStats.tiles;
+    return true;
+}
+
 static void DrawObjects(unsigned priority, bool effects)
 {
     static const uint8_t dimensions[3][4][2] = {
@@ -3736,6 +3802,8 @@ static void DrawObjects(unsigned priority, bool effects)
         if (x >= sClipX1 || x + (int)boxW <= sClipX0
          || y >= sClipY1 || y + (int)boxH <= sClipY0) continue;
         ++sStats.sprites;
+        if (mode != 2 && DrawBwObject((unsigned)i, obj, x, y, width, height, boxW, boxH, effects, mode == 1))
+            continue;
         {
             /* A new blend state ends the batch: Blend changes the GPU state. */
             static unsigned batchKey = ~0u;

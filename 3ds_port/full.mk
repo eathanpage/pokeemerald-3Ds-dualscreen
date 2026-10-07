@@ -68,6 +68,8 @@ FULL_DATA_OBJS += build/root/3ds_song_blob.o
 BACKEND_SRCS := src/3ds_assets.c src/3ds_map_loader.c src/3ds_compat.c
 BACKEND_SRCS += src/3ds_game_full.c src/3ds_game_bridge.c src/3ds_script_loader.c
 BACKEND_SRCS += src/3ds_bottom_ui.c
+# The game side of the BW sprites: the pictures as they are decompressed.
+BACKEND_SRCS += src/3ds_bw_bridge.c
 # The ENHANCEMENTS and CHEATS pages of OPTIONS (include/3ds_extras.h).
 BACKEND_SRCS += src/3ds_extras.c
 # The frame profiler times the engine's own routines through linker wrappers.

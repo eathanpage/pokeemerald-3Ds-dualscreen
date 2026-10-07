@@ -14,7 +14,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from . import __version__, pak
+from . import __version__, bwsprites, pak
 from .build import Payload, build_pack, default_payload
 from .errors import BuilderError
 from .install import APP_DIR, find_sd_cards, install
@@ -28,11 +28,26 @@ def _progress(fraction: float, message: str) -> None:
         sys.stdout.write("\n")
 
 
+def _bw_sprites(out: Path, wanted: bool) -> bool:
+    """The Black/White sprite pack (optional: the game shows its own pictures
+    without it)."""
+    if not wanted:
+        return False
+    try:
+        bwsprites.make_pack(out, progress=_progress)
+        return True
+    except Exception as exc:  # noqa: BLE001 - a warning, never an error
+        sys.stdout.write("\nWarning: the Black/White sprites could not be made (%s); "
+                         "the game will show its own pictures.\n" % exc)
+        return False
+
+
 def cmd_build(args) -> int:
     payload = Payload(args.payload)
     out_dir = Path(args.output) / APP_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
     info = build_pack(Path(args.rom), payload, out_dir / "emerald3ds.pak", _progress, args.keep_workdir)
+    _bw_sprites(out_dir / bwsprites.PACK_NAME, not args.no_bw_sprites)
     for exe in info["payload"].executables():
         if exe.exists():
             shutil.copy2(exe, out_dir / exe.name)
@@ -51,6 +66,9 @@ def cmd_install(args) -> int:
         info = build_pack(Path(args.rom), payload, pak_path, _progress)
         files = {exe.name: exe for exe in info["payload"].executables()}
         files["emerald3ds.pak"] = pak_path
+        bw_path = Path(tmp) / bwsprites.PACK_NAME
+        if _bw_sprites(bw_path, not args.no_bw_sprites):
+            files[bwsprites.PACK_NAME] = bw_path
         dest = install(sd, files, lambda f: _progress(f, "Copying to the SD card"))
     print("Installed to %s" % dest)
     return 0
@@ -93,9 +111,11 @@ def main(argv=None) -> int:
     b.add_argument("--rom", required=True)
     b.add_argument("--output", required=True)
     b.add_argument("--keep-workdir", action="store_true", help=argparse.SUPPRESS)
+    b.add_argument("--no-bw-sprites", action="store_true", help="keep the game's own Pokemon pictures")
     i = sub.add_parser("install", help="install straight onto an SD card")
     i.add_argument("--rom", required=True)
     i.add_argument("--sd", required=True)
+    i.add_argument("--no-bw-sprites", action="store_true", help="keep the game's own Pokemon pictures")
     v = sub.add_parser("verify", help="check a data pack against this release")
     v.add_argument("--pak", required=True)
     sub.add_parser("detect", help="list SD cards that look like a 3DS card")

@@ -10,6 +10,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from . import __version__
+from . import bwsprites
 from .build import Payload, build_pack, default_payload
 from .errors import BuilderError
 from .install import APP_DIR, find_sd_cards, install
@@ -126,9 +127,18 @@ class App:
             self.payload.check()
             with tempfile.TemporaryDirectory(prefix="emerald3ds-") as tmp:
                 pak_path = Path(tmp) / "emerald3ds.pak"
-                info = build_pack(rom, self.payload, pak_path, lambda f, m: progress(f * 0.9, m))
+                info = build_pack(rom, self.payload, pak_path, lambda f, m: progress(f * 0.7, m))
                 files = {exe.name: exe for exe in info["payload"].executables()}
                 files["emerald3ds.pak"] = pak_path
+                # The Black/White sprites: optional, the game shows its own
+                # pictures without them.
+                bw_path = Path(tmp) / bwsprites.PACK_NAME
+                try:
+                    bwsprites.make_pack(bw_path, progress=lambda f, m: progress(0.7 + f * 0.2, m))
+                    files[bwsprites.PACK_NAME] = bw_path
+                except Exception as exc:  # noqa: BLE001 - a warning, never an error
+                    self.events.put(("warning", "The Black/White sprites could not be made (%s).\n\n"
+                                                "The game will show its own Pokémon pictures." % exc))
                 dest = install(sd, files, lambda f: progress(0.9 + 0.1 * f, "Copying to the SD card"))
             self.events.put(("done", str(dest)))
         except BuilderError as exc:
@@ -147,6 +157,8 @@ class App:
                     self.finish()
                     messagebox.showinfo(TITLE, "Done. Pokémon Emerald 3Ds Dual Screen is installed in\n%s\n\n"
                                                "Start it from the Homebrew Launcher." % event[1])
+                elif event[0] == "warning":
+                    messagebox.showwarning(TITLE, event[1])
                 elif event[0] == "error":
                     self.finish()
                     messagebox.showerror(TITLE, event[1])

@@ -4,6 +4,13 @@
 
 New and improved:
 
+- Black/White sprites: every Pokémon is shown with its animated sprite from
+  Pokémon Black and White, in battle, on the summary, in the Pokédex and
+  wherever the game shows one, coloured as the game colours the original
+  (fades, flashes, shiny). The Windows and command-line builders download the
+  sprites from PokeAPI/sprites at install and write `bw_sprites.pack`; without
+  it the game shows its own pictures.
+
 - Spanish: the game in Spanish from your own Pokémon Esmeralda (Spain) ROM.
   The web and Windows builders accept it and pick the language from the ROM;
   every release carries both languages. The texts, graphics, braille, credits

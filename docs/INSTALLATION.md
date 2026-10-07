@@ -33,13 +33,33 @@ needs no Internet connection.
    3ds/emerald3ds/Emerald3DS.3dsx
    3ds/emerald3ds/Emerald3DS.smdh
    3ds/emerald3ds/emerald3ds.pak
+   3ds/emerald3ds/bw_sprites.pack
    ```
+
+   `bw_sprites.pack` holds the animated Black/White Pokémon sprites (see
+   [Black/White sprites](#blackwhite-sprites)). The first install downloads
+   them, so it needs an internet connection and takes a few minutes longer.
 
 6. If you selected a folder instead of the SD card, copy its `3ds` folder to
    the **root** of your SD card, merging it with the existing `3ds` folder.
 7. Make sure `SD:/3ds/dspfirm.cdc` is present for sound (see below). Put the
    card back in the console and launch **Pokémon Emerald 3Ds Dual Screen** from
    the Homebrew Launcher.
+
+### Black/White sprites
+
+The game shows every Pokémon with its animated sprite from Pokémon Black and
+White, in battle, on the summary, in the Pokédex and everywhere else it shows
+one. The sprites are not part of the release: the builder downloads them from
+the public [PokeAPI/sprites](https://github.com/PokeAPI/sprites) collection,
+converts them on your computer and writes `bw_sprites.pack` next to the game.
+They are kept in the builder's cache (`%LOCALAPPDATA%\emerald3ds-builder\bw`),
+so later installs don't download them again.
+
+If the download fails, the install still finishes and the game shows its own
+pictures. To keep the original pictures on purpose, pass `--no-bw-sprites` to
+`emerald3ds-builder-cli.exe build` or `install`, or delete
+`SD:/3ds/emerald3ds/bw_sprites.pack`. The web builder does not make the pack.
 
 ### Sound
 
