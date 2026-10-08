@@ -2763,6 +2763,8 @@ u16 __attribute__((weak)) CtrBattle_QuickBallItem(void)
 
 static u8 CurrentMode(void)
 {
+    bool8 party;
+
     if (gMain.callback2 == CB2_Overworld)
         sInGame = TRUE;
     if (!sInGame || !gSaveBlock1Ptr || !gSaveBlock2Ptr)
@@ -2774,12 +2776,14 @@ static u8 CurrentMode(void)
     /* Before the boxes: the bag can be opened from them, whole screen too. */
     if (gMain.callback2 == CB2_BagMenuRun && gBagMenu)
         return MODE_BAG_MENU;
-    /* A summary opened from the boxes is on the whole screen too. */
-    if (CtrStorage_IsOpen() || CtrVideo_BottomWhole())
-        return MODE_STORAGE;
     if (FuncIsActiveTask(Task_HandleChooseMonInput))
         sPartyMenuCallback = gMain.callback2;
-    if (sPartyMenuCallback && gMain.callback2 == sPartyMenuCallback)
+    party = sPartyMenuCallback && gMain.callback2 == sPartyMenuCallback;
+    /* A summary opened from the boxes is on the whole screen too; the party
+     * menu from a battle is as well, but takes its taps as the party menu. */
+    if (CtrStorage_IsOpen() || (CtrVideo_BottomWhole() && !party))
+        return MODE_STORAGE;
+    if (party)
         return MODE_PARTY_MENU;
     if (gMain.inBattle)
     {
