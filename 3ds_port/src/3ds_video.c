@@ -3846,52 +3846,144 @@ static void DrawWideBoxTile(unsigned chars, bool color256, unsigned entry, int x
         DrawSlot(slot, x + CTR_VIEW_X + sLayerShift, y + CTR_VIEW_Y, entry & 1024, entry & 2048);
 }
 
-/* The box's rows, stretched: x in the layer's own coordinates (sLayerShift
- * moves them on screen), so the screen's edges are at sClipX0/1 - shift. */
+/*
+ * The box at WIDE_BOX_SCALE, text and all, its bottom where it was and its
+ * middle on the screen's: its caps on the screen's edges, its middle
+ * repeated between them and what lies between the caps where the game put
+ * it. At 1.5 every 8 pixels of the box are 12 of the screen, so its tiles
+ * meet without seams.
+ */
+#define WIDE_BOX_SCALE 1.5f
+
+/* How much higher the box's top is, scaled (WideBoxLift). */
+static int WideBoxLift(const WideBox *box)
+{
+    return (int)((box->row1 + 1 - box->row0) * 8 * (WIDE_BOX_SCALE - 1.0f));
+}
+
 static void DrawWideBox(unsigned bg, const WideBox *box)
+{
+    const float scale = WIDE_BOX_SCALE;
+    unsigned control = Reg(8 + bg * 2), size = control >> 14;
+    unsigned map = ((control >> 8) & 31) * 0x800;
+    unsigned chars = ((control >> 2) & 3) * 0x4000;
+    bool color256 = (control & 128) != 0;
+    int scrollX = (int)(Reg(0x10 + bg * 4) & 511), scrollY = (int)(Reg(0x12 + bg * 4) & 511);
+    int y1 = (int)(box->row1 + 1) * 8 - scrollY;
+    /* Screen = translate + scale * layer: the GBA picture's middle (x 120)
+     * stays put, and so does the box's bottom edge. */
+    float tx = 120 + CTR_VIEW_X + sLayerShift - 120 * scale;
+    float ty = y1 + CTR_VIEW_Y - y1 * scale;
+    float u0 = (sClipX0 + CTR_VIEW_X - tx) / scale, u1 = (sClipX1 + CTR_VIEW_X - tx) / scale;
+    int top = y1 - (int)(box->row1 + 1 - box->row0) * 8 - WideBoxLift(box);
+    int clipTop = top > sClipY0 ? top : sClipY0, clipBottom = y1 < sClipY1 ? y1 : sClipY1;
+    float cap = (float)box->cap * 8;
+
+    if (clipTop >= clipBottom) return;
+    C2D_Flush();
+    Scissor(sClipX0, clipTop, sClipX1, clipBottom);
+    C2D_ViewReset();
+    C2D_ViewTranslate(tx, ty);
+    C2D_ViewScale(scale, scale);
+    for (unsigned row = box->row0; row <= box->row1; row++)
+    {
+        float y = (float)row * 8 - scrollY;
+        bool border = row == box->row0 || row == box->row1;
+        unsigned middle = MapEntry(map, size, border ? box->left + box->cap : box->left + 1, row);
+        int slot;
+
+        /* The middle across, under everything else. */
+        if ((slot = EntrySlot(chars, middle, color256)) >= 0)
+            for (float x = u0 + cap; x < u1 - cap; x += 8)
+                DrawSlot(slot, x, y, middle & 1024, middle & 2048);
+        /* What lies between the caps, where the game put it. */
+        for (unsigned c = box->left + box->cap; c + box->cap <= box->right; c++)
+        {
+            unsigned entry = MapEntry(map, size, c, row);
+
+            if ((slot = EntrySlot(chars, entry, color256)) >= 0)
+                DrawSlot(slot, (float)c * 8 - scrollX, y, entry & 1024, entry & 2048);
+        }
+        /* The caps on the screen's edges. */
+        for (unsigned k = 0; k < box->cap; k++)
+        {
+            unsigned a = MapEntry(map, size, box->left + k, row);
+            unsigned b = MapEntry(map, size, box->right + 1 - box->cap + k, row);
+
+            if ((slot = EntrySlot(chars, a, color256)) >= 0)
+                DrawSlot(slot, u0 + k * 8.0f, y, a & 1024, a & 2048);
+            if ((slot = EntrySlot(chars, b, color256)) >= 0)
+                DrawSlot(slot, u1 - (box->cap - k) * 8.0f, y, b & 1024, b & 2048);
+        }
+    }
+    C2D_Flush();
+    ViewBase();
+    RestoreScissor();
+}
+
+/*
+ * Above the box: the windows that sit on it - a YES/NO, a list of choices -
+ * would be under its taller top, so they are lifted by as much. A window is
+ * the tiles joined to it; one that reaches the rows the box now covers is
+ * lifted whole, the rest stay. False, drawing nothing, when none is; the
+ * layer is then drawn as ever.
+ */
+static bool DrawAboveWideBox(unsigned bg, const WideBox *box, int lift, int clipTop)
 {
     unsigned control = Reg(8 + bg * 2), size = control >> 14;
     unsigned map = ((control >> 8) & 31) * 0x800;
     unsigned chars = ((control >> 2) & 3) * 0x4000;
     bool color256 = (control & 128) != 0;
     int scrollX = (int)(Reg(0x10 + bg * 4) & 511), scrollY = (int)(Reg(0x12 + bg * 4) & 511);
-    int shift = (int)sLayerShift;
-    int edge0 = sClipX0 - shift, edge1 = sClipX1 - shift;
-    int inner0 = (int)(box->left + box->cap) * 8 - scrollX, inner1 = (int)(box->right + 1 - box->cap) * 8 - scrollX;
-    int y0 = (int)box->row0 * 8 - scrollY, y1 = (int)(box->row1 + 1) * 8 - scrollY;
-    int x0 = sClipX0, x1 = sClipX1;
+    int top = (int)box->row0 * 8 - scrollY;
+    uint32_t lifted[32] = {0};
+    uint16_t queue[32 * 32];
+    unsigned head = 0, tail = 0, rows = box->row0 < 32 ? box->row0 : 32;
+    bool any = false;
 
-    if (y0 < sClipY0) y0 = sClipY0;
-    if (y1 > sClipY1) y1 = sClipY1;
-    if (y0 >= y1) return;
-    C2D_Flush();
-    Scissor(x0, y0, x1, y1);
-    ViewBase();
-    for (unsigned row = box->row0; row <= box->row1; row++)
+    for (unsigned r = 0; r < rows; r++)
     {
-        int y = (int)row * 8 - scrollY;
-        bool border = row == box->row0 || row == box->row1;
-        unsigned middle = MapEntry(map, size, border ? box->left + box->cap : box->left + 1, row);
+        if ((int)(r + 1) * 8 - scrollY <= top - lift) continue;
+        for (unsigned c = 0; c < 32; c++)
+            if ((MapEntry(map, size, c, r) & 1023) && !(lifted[r] & (1u << c)))
+            {
+                lifted[r] |= 1u << c;
+                queue[tail++] = (uint16_t)(r * 32 + c);
+            }
+    }
+    while (head < tail)
+    {
+        unsigned r = queue[head] / 32, c = queue[head] % 32;
+        static const int step[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
 
-        if (y + 8 <= y0 || y >= y1) continue;
-        /* The middle across, under everything else. */
-        for (int x = edge0 + (int)box->cap * 8; x < inner0; x += 8)
-            DrawWideBoxTile(chars, color256, middle, x, y);
-        for (int x = inner1; x < edge1 - (int)box->cap * 8; x += 8)
-            DrawWideBoxTile(chars, color256, middle, x, y);
-        /* What lies between the caps, where the game put it. */
-        for (unsigned c = box->left + box->cap; c + box->cap <= box->right; c++)
-            DrawWideBoxTile(chars, color256, MapEntry(map, size, c, row), (int)c * 8 - scrollX, y);
-        /* The caps on the screen's edges. */
-        for (unsigned k = 0; k < box->cap; k++)
+        head++;
+        any = true;
+        for (unsigned k = 0; k < 4; k++)
         {
-            DrawWideBoxTile(chars, color256, MapEntry(map, size, box->left + k, row), edge0 + (int)k * 8, y);
-            DrawWideBoxTile(chars, color256, MapEntry(map, size, box->right + 1 - box->cap + k, row),
-                            edge1 - (int)(box->cap - k) * 8, y);
+            int nr = (int)r + step[k][1], nc = (int)c + step[k][0];
+
+            if (nr < 0 || nr >= (int)rows || nc < 0 || nc >= 32 || (lifted[nr] & (1u << nc))) continue;
+            if (!(MapEntry(map, size, (unsigned)nc, (unsigned)nr) & 1023)) continue;
+            lifted[nr] |= 1u << nc;
+            queue[tail++] = (uint16_t)(nr * 32 + nc);
         }
     }
+    if (!any) return false;
+    C2D_Flush();
+    Scissor(sClipX0, clipTop, sClipX1, top);
+    ViewBase();
+    for (unsigned r = 0; r < rows; r++)
+        for (unsigned c = 0; c < 32; c++)
+        {
+            unsigned entry = MapEntry(map, size, c, r);
+            bool up = (lifted[r] & (1u << c)) != 0;
+
+            if (!(entry & 1023)) continue;
+            DrawWideBoxTile(chars, color256, entry, (int)c * 8 - scrollX, (int)r * 8 - scrollY - (up ? lift : 0));
+        }
     C2D_Flush();
     RestoreScissor();
+    return true;
 }
 
 static void DrawObjects(unsigned priority, bool effects)
@@ -4303,7 +4395,8 @@ static void Layers(unsigned mask)
                 if (top > clipTop)
                 {
                     sClipY1 = top < clipBottom ? top : clipBottom;
-                    if (!DrawLineBg(bg) && !DrawFieldBgTex(bg) && !DrawStageBgTex(bg) && !DrawBandBgTex(bg))
+                    if (!DrawAboveWideBox(bg, &wideBox, WideBoxLift(&wideBox), clipTop)
+                        && !DrawLineBg(bg) && !DrawFieldBgTex(bg) && !DrawStageBgTex(bg) && !DrawBandBgTex(bg))
                         DrawTextBg(bg);
                     sClipY1 = clipBottom;
                 }
