@@ -37,6 +37,7 @@
 #include "global.h"
 #include "3ds_online.h"
 #include "online_link.h"
+#include "3ds_log.h"
 #include "librfu.h"
 
 enum
@@ -167,9 +168,15 @@ static struct
 static void ChannelReceive(u8 type, u16 from, const u8 *msg, u32 len);
 static void ClearBlockChannel(void);
 
-// Set sTrace to 1 to log commands and events to stderr (the 3DSX's console).
-static int sTrace = 0;
-#define TRACE(...) do { if (sTrace) { fprintf(stderr, "[rfu %5u] ", sA.frame); fprintf(stderr, __VA_ARGS__); fputc('\n', stderr); fflush(stderr); } } while (0)
+// rfu_trace=1 in settings.txt: log commands and events (to port.log, with
+// debug.txt).
+int CtrSettings_GetInt(const char *key, int fallback);
+static int sTrace = -1;
+#define TRACE(...) do { \
+    if (sTrace < 0) sTrace = CtrSettings_GetInt("rfu_trace", 0); \
+    if (sTrace > 0) { char _t[160]; snprintf(_t, sizeof(_t), __VA_ARGS__); \
+        CtrLog_Write(CTR_LOG_GAME, "rfu %5u %s", (unsigned)sA.frame, _t); } \
+} while (0)
 
 // ---------------------------------------------------------------------------
 
@@ -348,7 +355,7 @@ static void HandlePeerMessage(u16 from, const u8 *msg, u32 len)
 
     if (len == 0)
         return;
-    TRACE("peer %04X msg %u len %u", from, msg[0], len);
+    TRACE("peer %04X msg %u len %u", from, msg[0], (unsigned)len);
     switch (msg[0])
     {
     case PEER_CONNECT:
@@ -729,7 +736,7 @@ static void DeliverToGame(u8 command, u8 length, u32 param)
     struct STWIStatus *st = gSTWIStatus;
     u32 *rx = (u32 *)st->rxPacket;
 
-    TRACE("deliver %02X len %u param %08X", command, length, param);
+    TRACE("deliver %02X len %u param %08X", command, length, (unsigned)param);
     rx[0] = 0x99660000 | (length << 8) | command;
     if (length)
         rx[1] = param;
@@ -1158,7 +1165,7 @@ void PortRfu_Command(void)
     }
     st->sending = 0;
     TRACE("cmd %02X len %u -> %s ack %u [%08X %08X] state %u", command, reqLength, reject ? "REJECT" : "ok",
-          ackLength, ackLength ? ack[0] : 0, ackLength > 1 ? ack[1] : 0, sA.state);
+          ackLength, (unsigned)(ackLength ? ack[0] : 0), (unsigned)(ackLength > 1 ? ack[1] : 0), sA.state);
     if (st->callbackM != NULL)
         st->callbackM(st->reqActiveCommand, st->error);
 
