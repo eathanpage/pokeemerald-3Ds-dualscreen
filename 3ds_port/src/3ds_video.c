@@ -4059,6 +4059,13 @@ static void DrawObjects(unsigned priority, bool effects)
                          (affine ? 0 : x + CTR_VIEW_X + sLayerShift) + (int)tx * 8,
                          (affine ? 0 : y + CTR_VIEW_Y) + (int)ty * 8, flipX, flipY);
             }
+        /* The batch of the sprites after it is drawn with the view as it is
+         * then: the bag's item icon came out through the bag's matrix. */
+        if (affine)
+        {
+            C2D_Flush();
+            ViewBase();
+        }
     }
     SpriteBatchFlush();
     sLayerShift = layerShift;
