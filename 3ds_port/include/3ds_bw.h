@@ -56,4 +56,13 @@ typedef struct
 bool CtrBw_Prepare(unsigned index, const uint16_t *obj, bool mapping1d, const uint8_t *objVram,
                    const uint16_t *objPalettes, uint32_t frame, CtrBwSprite *out);
 
+/*
+ * The same for a picture a battle animation copied onto background `bg`
+ * (MoveBattlerSpriteToBG): `tiles` are its 64 tiles (64x64 4bpp), `palette`
+ * the 16 colours of BG palette `paletteSlot`. Its animation carries on from
+ * the sprite it came from. `left`/`top` are in the picture's 64x64 box.
+ */
+bool CtrBw_PrepareBg(unsigned bg, const uint8_t *tiles, const uint16_t *palette, unsigned paletteSlot,
+                     uint32_t frame, CtrBwSprite *out);
+
 #endif

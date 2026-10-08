@@ -96,6 +96,7 @@ static Instance sInstances[NUM_INSTANCES];
 static Decoded sDecoded[NUM_DECODED];
 static Texture sTextures[NUM_TEXTURES];
 static bool sShiny[16]; /* last normal/shiny decision per palette */
+static bool sBgShiny[16]; /* the same for background palettes (CtrBw_PrepareBg) */
 static uint32_t sFrame;
 static bool sTried;
 
@@ -620,64 +621,36 @@ static Texture *TextureFor(unsigned index, Decoded *d, int frame, const uint16_t
     return t;
 }
 
-bool CtrBw_Prepare(unsigned index, const uint16_t *obj, bool mapping1d, const uint8_t *objVram,
-                   const uint16_t *objPalettes, uint32_t frame, CtrBwSprite *out)
-{
-    static uint8_t tiles[PIC_FRAME_SIZE];
-    static struct { uint16_t tileBase; int16_t pic; uint8_t rows; uint32_t frame; } seen[16];
-    static int numSeen;
-    uint16_t a0 = obj[0], a1 = obj[1], a2 = obj[2], tileBase = a2 & 0x3ff, colors[16];
-    uint8_t rows = 8;
-    int pic = -1, k;
-    MonPic *p;
-    const PackEntry *e;
-    Decoded *d;
-    Texture *t;
+/* The pictures OAM entries showed this frame, by their first tile. */
+static struct { uint16_t tileBase; int16_t pic; uint8_t rows; } sSeen[16];
+static int sNumSeen;
 
-    if (!sPack || !sNumPics)
-        return false;
-    /* 64x64 4bpp sprites. */
-    if ((a0 >> 14) != 0 || (a1 >> 14) != 3 || (a0 & 0x2000) || tileBase + 64 > 1024)
-        return false;
+static void NewFrame(uint32_t frame)
+{
     if (frame != sFrame)
     {
         sFrame = frame;
-        numSeen = 0;
+        sNumSeen = 0;
     }
-    for (k = 0; k < numSeen; k++)
-        if (seen[k].tileBase == tileBase)
-        {
-            pic = seen[k].pic;
-            rows = seen[k].rows;
-            break;
-        }
-    if (k == numSeen)
-    {
-        if (mapping1d)
-            memcpy(tiles, objVram + tileBase * 32, PIC_FRAME_SIZE);
-        else
-            for (int row = 0; row < 8; row++)
-                memcpy(tiles + row * 256, objVram + ((tileBase + row * 32) & 0x3ff) * 32, 256);
-        pic = LookupHash(HashPic(tiles), &rows);
-        if (numSeen < 16)
-        {
-            seen[numSeen].tileBase = tileBase;
-            seen[numSeen].pic = (int16_t)pic;
-            seen[numSeen].rows = rows;
-            numSeen++;
-        }
-    }
-    if (pic < 0)
-        return false;
+}
 
-    p = &sPics[pic];
-    e = &sEntries[p->entry];
-    d = Decode(p->entry);
+/* The texture and placement of picture `pic`'s BW sprite, animating from
+ * `start`, coloured from `palette` (the 16 colours the picture is shown in). */
+static bool FinishSprite(unsigned texIndex, int pic, uint8_t rows, uint32_t start, const uint16_t *palette,
+                         bool *shiny, CtrBwSprite *out)
+{
+    MonPic *p = &sPics[pic];
+    const PackEntry *e = &sEntries[p->entry];
+    Decoded *d = Decode(p->entry);
+    uint16_t colors[16];
+    Texture *t;
+    int k;
+
     if (!d)
         return false;
-    k = CurrentFrame(e, d, sFrame - StartFrameFor(tileBase, (uint16_t)pic));
-    MakeColors(p, d->palettes, objPalettes + (a2 >> 12) * 16, &sShiny[a2 >> 12], colors);
-    t = TextureFor(index, d, k, colors);
+    k = CurrentFrame(e, d, sFrame - start);
+    MakeColors(p, d->palettes, palette, shiny, colors);
+    t = TextureFor(texIndex, d, k, colors);
     if (!t)
         return false;
 
@@ -706,4 +679,80 @@ bool CtrBw_Prepare(unsigned index, const uint16_t *obj, bool mapping1d, const ui
     out->u1 = e->width / (float)t->size;
     out->v1 = 1.0f - out->height / (float)t->size;
     return true;
+}
+
+bool CtrBw_PrepareBg(unsigned bg, const uint8_t *tiles, const uint16_t *palette, unsigned paletteSlot,
+                     uint32_t frame, CtrBwSprite *out)
+{
+    uint8_t rows = 8;
+    uint32_t start = 0;
+    int pic;
+    bool found = false;
+
+    if (!sPack || !sNumPics || bg > 3)
+        return false;
+    NewFrame(frame);
+    pic = LookupHash(HashPic(tiles), &rows);
+    if (pic < 0)
+        return false;
+    /* Carry on the animation of the sprite the picture came from (hidden
+     * now, seen last frame), else start one for the layer. */
+    for (int i = 0; i < NUM_INSTANCES; i++)
+    {
+        Instance *in = &sInstances[i];
+
+        if (in->used && sPics[in->pic].entry == sPics[pic].entry && in->lastSeen + 2 >= sFrame)
+        {
+            in->lastSeen = sFrame;
+            start = in->start;
+            found = true;
+            break;
+        }
+    }
+    if (!found)
+        start = StartFrameFor((uint16_t)(0x8000 | bg), (uint16_t)pic);
+    return FinishSprite(128 + bg, pic, rows, start, palette, &sBgShiny[paletteSlot & 15], out);
+}
+
+bool CtrBw_Prepare(unsigned index, const uint16_t *obj, bool mapping1d, const uint8_t *objVram,
+                   const uint16_t *objPalettes, uint32_t frame, CtrBwSprite *out)
+{
+    static uint8_t tiles[PIC_FRAME_SIZE];
+    uint16_t a0 = obj[0], a1 = obj[1], a2 = obj[2], tileBase = a2 & 0x3ff;
+    uint8_t rows = 8;
+    int pic = -1, k;
+
+    if (!sPack || !sNumPics)
+        return false;
+    /* 64x64 4bpp sprites. */
+    if ((a0 >> 14) != 0 || (a1 >> 14) != 3 || (a0 & 0x2000) || tileBase + 64 > 1024)
+        return false;
+    NewFrame(frame);
+    for (k = 0; k < sNumSeen; k++)
+        if (sSeen[k].tileBase == tileBase)
+        {
+            pic = sSeen[k].pic;
+            rows = sSeen[k].rows;
+            break;
+        }
+    if (k == sNumSeen)
+    {
+        if (mapping1d)
+            memcpy(tiles, objVram + tileBase * 32, PIC_FRAME_SIZE);
+        else
+            for (int row = 0; row < 8; row++)
+                memcpy(tiles + row * 256, objVram + ((tileBase + row * 32) & 0x3ff) * 32, 256);
+        pic = LookupHash(HashPic(tiles), &rows);
+        if (sNumSeen < 16)
+        {
+            sSeen[sNumSeen].tileBase = tileBase;
+            sSeen[sNumSeen].pic = (int16_t)pic;
+            sSeen[sNumSeen].rows = rows;
+            sNumSeen++;
+        }
+    }
+    if (pic < 0)
+        return false;
+    return FinishSprite(index, pic, rows, StartFrameFor(tileBase, (uint16_t)pic), objPalettes + (a2 >> 12) * 16,
+                        &sShiny[a2 >> 12], out);
 }

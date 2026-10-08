@@ -972,8 +972,14 @@ static bool TilePaletteChanged(const Tile *tile, unsigned paletteId)
  * nothing. The caller builds the subtexture: a slot is a fixed square of the
  * atlas, so that is four multiplications and no shared state.
  */
+/* Character addresses left out of the background being drawn: a Pokemon
+ * picture drawn as its BW sprite instead (DrawBwBg). */
+static unsigned sBwHideLo, sBwHideHi;
+
 static int GetTileSlot(unsigned address, unsigned bank, bool color256)
 {
+    if (address >= sBwHideLo && address < sBwHideHi)
+        return -1;
     if (address + (color256 ? 64 : 32) > 0x18000)
     {
         Error(1, "tile outside logical VRAM");
@@ -3704,6 +3710,73 @@ static bool DrawBwObject(unsigned index, const uint16_t *obj, int x, int y, unsi
     return true;
 }
 
+/*
+ * A Pokemon picture a battle animation copied onto BG1/BG2 (as
+ * MoveBattlerSpriteToBG does: 64 consecutive tiles in the 8x8 tile block at the
+ * map's top-left) and hid the sprite of: drawn as the sprite's BW picture
+ * too, as the PC port does. While the layer is drawn its tiles are left out
+ * (GetTileSlot); DrawBwBg puts the BW picture in their place after.
+ */
+static bool FindBwBg(unsigned bg, CtrBwSprite *out, unsigned *hideLo)
+{
+    static uint32_t stamp[4];
+    static bool found[4];
+    static CtrBwSprite sprite[4];
+    static unsigned lo[4];
+    unsigned control, map, chars, first, tile;
+
+    if (bg != 1 && bg != 2)
+        return false;
+    if (stamp[bg] != sStats.frames + 1)
+    {
+        stamp[bg] = sStats.frames + 1;
+        found[bg] = false;
+        control = Reg(8 + bg * 2);
+        map = ((control >> 8) & 31) * 0x800;
+        chars = ((control >> 2) & 3) * 0x4000;
+        first = Read16(map);
+        tile = first & 1023;
+        if (!(control & 128) && !(first & 0x0C00) && chars + (tile + 64) * 32 <= 0x10000)
+        {
+            bool laidOut = true;
+
+            for (unsigned y = 0; y < 8 && laidOut; y++)
+                for (unsigned x = 0; x < 8 && laidOut; x++)
+                    laidOut = Read16(map + (y * 32 + x) * 2) == first + y * 8 + x;
+            if (laidOut && CtrBw_PrepareBg(bg, sMemory.vram + chars + tile * 32, sMemory.palette + (first >> 12) * 16,
+                                           first >> 12, sStats.frames, &sprite[bg]))
+            {
+                found[bg] = true;
+                lo[bg] = chars + tile * 32;
+            }
+        }
+    }
+    if (!found[bg])
+        return false;
+    *out = sprite[bg];
+    *hideLo = lo[bg];
+    return true;
+}
+
+/* The BW picture where the map's top-left 64x64 is on screen, as the layer
+ * wraps round. */
+static void DrawBwBg(unsigned bg, const CtrBwSprite *bw)
+{
+    unsigned control = Reg(8 + bg * 2), size = control >> 14;
+    int width = (size & 1) ? 512 : 256, height = (size & 2) ? 512 : 256;
+    int x = -(int)(Reg(0x10 + bg * 4) & 511) & (width - 1);
+    int y = -(int)(Reg(0x12 + bg * 4) & 511) & (height - 1);
+    Tex3DS_SubTexture sub = {(u16)bw->width, (u16)bw->height, bw->u0, bw->v0, bw->u1, bw->v1};
+
+    if (x >= width / 2) x -= width;
+    if (y >= height / 2) y -= height;
+    SpriteBatchFlush();
+    ViewBase();
+    C2D_DrawImageAt((C2D_Image){(C3D_Tex *)bw->tex, &sub}, x + bw->left + CTR_VIEW_X + sLayerShift,
+                    y + bw->top + CTR_VIEW_Y, 0, &sTint, 1, 1);
+    ++sStats.tiles;
+}
+
 static void DrawObjects(unsigned priority, bool effects)
 {
     static const uint8_t dimensions[3][4][2] = {
@@ -4079,11 +4152,26 @@ static void Layers(unsigned mask)
             float shift = sLayerShift;
             uint32_t tilesBefore = sStats.tiles;
             if (sFieldUi && bg == 0 && !sFieldBanner) sLayerShift += CTR_FIELD_UI_SHIFT / sShiftZoom;
-            if (((mode == 1 && bg == 2) || mode == 2) && sNavBand && !lines) DrawNavBackmostAffine(bg);
-            else if ((mode == 1 && bg == 2) || mode == 2) DrawAffineBg(bg);
+            CtrBwSprite bwBg;
+            unsigned bwHide;
+            bool affine = (mode == 1 && bg == 2) || mode == 2;
+            bool bwOn = !affine && FindBwBg(bg, &bwBg, &bwHide);
+
+            if (bwOn)
+            {
+                sBwHideLo = bwHide;
+                sBwHideHi = bwHide + 64 * 32;
+            }
+            if (affine && sNavBand && !lines) DrawNavBackmostAffine(bg);
+            else if (affine) DrawAffineBg(bg);
             else if (sBattle && bg == 0) DrawBattleTextLayer(bg);
             else if (!DrawLineBg(bg) && !DrawFieldBgTex(bg) && !DrawStageBgTex(bg) && !DrawBandBgTex(bg))
                 DrawTextBg(bg);
+            if (bwOn)
+            {
+                sBwHideLo = sBwHideHi = 0;
+                DrawBwBg(bg, &bwBg);
+            }
             sBgDrawn[bg] += sStats.tiles - tilesBefore;
             sLayerShift = shift;
             sViewY = viewY;
