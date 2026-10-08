@@ -3992,7 +3992,10 @@ static void DrawObjects(unsigned priority, bool effects)
         if (x >= sClipX1 || x + (int)boxW <= sClipX0
          || y >= sClipY1 || y + (int)boxH <= sClipY0) continue;
         ++sStats.sprites;
-        if (mode != 2 && DrawBwObject((unsigned)i, obj, x, y, width, height, boxW, boxH, effects, mode == 1))
+        /* A window sprite too, into the OBJ window's mask: a stat change's
+         * copy of the Pokemon shows the pattern in its BW picture's shape. */
+        if ((mode != 2 || sObjWinPass == OBJWIN_MASK)
+            && DrawBwObject((unsigned)i, obj, x, y, width, height, boxW, boxH, effects, mode == 1))
             continue;
         {
             /* A new blend state ends the batch: Blend changes the GPU state. */
@@ -4555,7 +4558,9 @@ static unsigned WindowPartition(int top, int bottom, int rects[WINDOW_RECTS][4],
     for (unsigned y = 0; y + 1 < ny; ++y) for (unsigned x = 0; x + 1 < nx; ++x)
     {
         if (xs[x] == xs[x+1] || ys[y] == ys[y+1]) continue;
-        unsigned mask = (display & 0x6000) ? Reg(0x4a) & 63 : 63;
+        /* Outside every window: WINOUT once any window is on, the OBJ
+         * window too (a stat change has only that one). */
+        unsigned mask = (display & 0xE000) ? Reg(0x4a) & 63 : 63;
         for (int w = 1; w >= 0; --w)
             if ((display & (0x2000u << w)) && Inside(xs[x], ys[y], (unsigned)w))
                 mask = (Reg(0x48) >> (8*w)) & 63;
@@ -4847,7 +4852,10 @@ static void Compose(void)
     int top = sNavBand ? sClipY0 : VIEW_TOP, bottom = sNavBand ? sClipY1 : VIEW_BOTTOM;
     int first = top > 0 ? top : 0, end = bottom < 160 ? bottom : 160;
 
-    if (!(display & 0x6000)) { Layers(63); return; }
+    /* No window at all; with only the OBJ window on (a stat change, with
+     * windows 0 and 1 off), outside it is WINOUT's: the stat pattern drawn
+     * whole here covered the screen. */
+    if (!(display & 0xE000)) { Layers(63); return; }
     if (!LineWindows())
         ComposeBand(top, bottom);
     else
