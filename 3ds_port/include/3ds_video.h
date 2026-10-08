@@ -27,9 +27,8 @@ unsigned CtrVideo_VoxelUploadsLeft(void);
  * 120,112) sits on screen (200,192), on top of the 1:1 text box. At 1.5 the
  * tile grid still lands on whole screen pixels.
  */
-/* 1:1, as the field is: at 1.4 the GBA's pixels came out soft (filtered)
- * or one and two screen pixels wide (nearest). */
-#define CTR_BATTLE_ZOOM 1.0f
+/* 1.5: the battle's art is upscaled to it (3ds_video.c, HdDrawCell). */
+#define CTR_BATTLE_ZOOM 1.5f
 
 typedef struct
 {
@@ -205,6 +204,16 @@ void CtrVideo_MarkScreenOam(unsigned first, unsigned end);
  */
 #define CTR_EXT_OBJ_PALETTES 4
 void CtrVideo_MarkExtPaletteOam(unsigned first, unsigned end, unsigned palette);
+
+/*
+ * The battle's upscaled art (3ds_video.c, hd_tiles.pack): the game registers
+ * a tile of text it drew with the pack's upscaled glyphs (text.c) - its 4bpp
+ * bytes, and its 24x24 upscale as 4bpp rows of 12 bytes - and asks for a
+ * glyph of a font (0 small, 1 normal, 2 short, 3 narrow, 4 small narrow):
+ * its 16x16 cell and 48x48 upscale, 4bpp.
+ */
+void CtrVideo_RegisterHdTile(const uint8_t *tile, const uint8_t *hd);
+bool CtrVideo_HdGlyph(unsigned font, unsigned glyph, const uint8_t **cell, const uint8_t **big);
 void CtrVideo_SetExtObjPalette(unsigned index, const uint16_t *colors);
 /* Among those, the ones placed by hand on the 240x160 picture around the
  * player (the healing machine's balls and monitors): drawn where the map has

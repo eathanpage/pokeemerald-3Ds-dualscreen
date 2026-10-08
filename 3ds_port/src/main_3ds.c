@@ -6,8 +6,10 @@
 #include "3ds_video.h"
 /* libctru's supported heap override. Citro3D flushes the entire linear heap
  * at FrameEnd(0); the default 32 MiB needlessly penalizes Old 3DS. The tile
- * atlas, geometry and command buffers and LCD buffers fit within 8 MiB. */
-uint32_t __ctru_linear_heap_size = 8 * 1024 * 1024;
+ * atlas, geometry and command buffers and LCD buffers fit within 8 MiB; the
+ * battle's upscaled art (3ds_video.c, HdDrawCell) takes 2 MiB more, and its
+ * BW sprites at 1.5x some more again. */
+uint32_t __ctru_linear_heap_size = 12 * 1024 * 1024;
 
 /*
  * libctru's own __system_allocateHeaps, except that the application heap is

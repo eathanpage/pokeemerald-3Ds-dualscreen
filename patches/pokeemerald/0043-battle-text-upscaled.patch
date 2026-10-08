@@ -1,0 +1,313 @@
+Pokémon Emerald 3Ds Dual Screen changes to pret/pokeemerald 76463dac15cad36aca5e2b3f6366abf9e53f814f: battle text upscaled
+Applies after 0042-field-text-box-2x.patch; apply with tools/bootstrap.py.
+
+diff --git a/src/text.c b/src/text.c
+--- a/src/text.c
++++ b/src/text.c
+@@ -14,6 +14,12 @@
+ #include "fonts.h"
+ #ifdef PORT_BRIDGE
+ #include "port_platform.h"
++#ifdef PLATFORM_3DS
++#include "3ds_video.h"
++// Not <stdlib.h>: global.h's abs() is a macro.
++void *malloc(size_t size);
++void free(void *ptr);
++#endif
+ #endif
+ 
+ static u16 RenderText(struct TextPrinter *);
+@@ -620,6 +626,143 @@
+     }
+ }
+ 
++#ifdef PLATFORM_3DS
++/*
++ * The battle's text upscaled (3ds_video.c, the upscaled art). The battle is
++ * drawn at 1.5x from art upscaled ahead of time; text is drawn by the game
++ * into its windows' tiles, so it can't be in the pack - its glyphs are
++ * (hd_tiles.pack's fonts). As a glyph is copied into a window, its 48x48
++ * upscale is copied, coloured the same, into a 3x copy of the window
++ * (sCtrHdWindows); the tiles it touched are registered with the renderer by
++ * their 4bpp bytes with their 3x version, and the renderer finds them as it
++ * finds the pack's - in a healthbox the window's tiles are copied into a
++ * sprite, so they are the same bytes. The copy follows the window by its own
++ * pixels: what isn't a glyph is its 1x pixels repeated 3x3 (CtrHdText_Sync,
++ * after fills too), and a tile whose 3x3 blocks' middles aren't its pixels
++ * (drawn over some other way) isn't registered.
++ */
++static s8 sCtrHdFont = -1;
++static u16 sCtrHdGlyph;
++static struct
++{
++    const u8 *tileData;
++    u8 *pixels;   /* a byte a pixel, width * 24 by height * 24 */
++    u16 width, height;
++} sCtrHdWindows[WINDOWS_MAX];
++
++static u8 CtrHd1x(const struct Window *window, u32 x, u32 y)
++{
++    const u8 *b = window->tileData + (y / 8) * window->window.width * 32 + (x / 8) * 32 + (y % 8) * 4 + (x % 8) / 2;
++
++    return (x & 1) ? *b >> 4 : *b & 15;
++}
++
++static u8 *CtrHdWindow(u8 windowId)
++{
++    const struct Window *window = &gWindows[windowId];
++    u32 w = window->window.width, h = window->window.height;
++
++    if (windowId >= WINDOWS_MAX || !window->tileData || !w || !h)
++        return NULL;
++    if (sCtrHdWindows[windowId].tileData != window->tileData || sCtrHdWindows[windowId].width != w
++        || sCtrHdWindows[windowId].height != h)
++    {
++        free(sCtrHdWindows[windowId].pixels);
++        sCtrHdWindows[windowId].pixels = malloc(w * 24 * h * 24);
++        sCtrHdWindows[windowId].tileData = window->tileData;
++        sCtrHdWindows[windowId].width = w;
++        sCtrHdWindows[windowId].height = h;
++        if (!sCtrHdWindows[windowId].pixels)
++            return NULL;
++        CtrHdText_Sync(windowId, 0, 0, w * 8, h * 8);
++    }
++    return sCtrHdWindows[windowId].pixels;
++}
++
++// The 3x copy of [x, x + width) x [y, y + height) of a window: its pixels
++// repeated 3x3. After a fill, or for a new copy.
++void CtrHdText_Sync(u8 windowId, u32 x, u32 y, u32 width, u32 height)
++{
++    const struct Window *window;
++    u8 *pixels;
++    u32 stride;
++
++    if (windowId >= WINDOWS_MAX || !(pixels = sCtrHdWindows[windowId].pixels)
++        || sCtrHdWindows[windowId].tileData != gWindows[windowId].tileData)
++        return;
++    window = &gWindows[windowId];
++    stride = window->window.width * 24;
++    if (x + width > window->window.width * 8u) width = window->window.width * 8u - x;
++    if (y + height > window->window.height * 8u) height = window->window.height * 8u - y;
++    for (u32 py = y; py < y + height; py++)
++        for (u32 px = x; px < x + width; px++)
++        {
++            u8 v = CtrHd1x(window, px, py);
++            u8 *block = pixels + py * 3 * stride + px * 3;
++
++            block[0] = block[1] = block[2] = v;
++            block[stride] = block[stride + 1] = block[stride + 2] = v;
++            block[stride * 2] = block[stride * 2 + 1] = block[stride * 2 + 2] = v;
++        }
++}
++
++// After a glyph is copied in: the same glyph upscaled into the 3x copy, then
++// the tiles it touched registered.
++static void CtrHdText_CopyGlyph(u8 windowId, u32 currX, u32 currY, s32 glyphWidth, s32 glyphHeight)
++{
++    const struct Window *window = &gWindows[windowId];
++    const u8 *cell, *big;
++    u8 colors[16], *pixels;
++    u32 stride;
++
++    if (!gMain.inBattle || sCtrHdFont < 0 || glyphWidth <= 0 || glyphHeight <= 0
++        || !CtrVideo_HdGlyph((unsigned)sCtrHdFont, sCtrHdGlyph, &cell, &big) || !(pixels = CtrHdWindow(windowId)))
++        return;
++    stride = window->window.width * 24;
++    // The font's values as the game coloured them (gCurGlyph: 8x8 tiles,
++    // top left, top right, bottom left, bottom right).
++    memset(colors, 0, sizeof(colors));
++    for (s32 y = 0; y < glyphHeight && y < 16; y++)
++        for (s32 x = 0; x < glyphWidth && x < 16; x++)
++        {
++            u32 word = (y < 8 ? gCurGlyph.gfxBufferTop : gCurGlyph.gfxBufferBottom)[(x >> 3) * 8 + (y & 7)];
++            u8 value = (cell[y * 8 + x / 2] >> ((x & 1) * 4)) & 15;
++
++            colors[value] = (word >> ((x & 7) * 4)) & 15;
++        }
++    // Only its coloured pixels, as GLYPH_COPY.
++    for (s32 y = 0; y < glyphHeight * 3 && y < 48; y++)
++        for (s32 x = 0; x < glyphWidth * 3 && x < 48; x++)
++        {
++            u8 color = colors[(big[y * 24 + x / 2] >> ((x & 1) * 4)) & 15];
++
++            if (color)
++                pixels[(currY * 3 + y) * stride + currX * 3 + x] = color;
++        }
++    // The tiles it touched, if their 3x copy is theirs.
++    for (u32 ty = currY / 8; ty <= (currY + glyphHeight - 1) / 8 && ty < window->window.height; ty++)
++        for (u32 tx = currX / 8; tx <= (currX + glyphWidth - 1) / 8 && tx < window->window.width; tx++)
++        {
++            u8 hd[288];
++            bool8 ok = TRUE;
++
++            for (u32 y = 0; y < 8 && ok; y++)
++                for (u32 x = 0; x < 8 && ok; x++)
++                    ok = pixels[((ty * 8 + y) * 3 + 1) * stride + (tx * 8 + x) * 3 + 1] == CtrHd1x(window, tx * 8 + x, ty * 8 + y);
++            if (!ok)
++                continue;
++            for (u32 y = 0; y < 24; y++)
++                for (u32 x = 0; x < 24; x += 2)
++                {
++                    const u8 *row = pixels + (ty * 24 + y) * stride + tx * 24;
++
++                    hd[y * 12 + x / 2] = (row[x] & 15) | ((row[x + 1] & 15) << 4);
++                }
++            CtrVideo_RegisterHdTile(window->tileData + ty * window->window.width * 32 + tx * 32, hd);
++        }
++}
++#endif
++
+ void CopyGlyphToWindow(struct TextPrinter *textPrinter)
+ {
+     struct Window *window;
+@@ -671,6 +814,9 @@
+             GLYPH_COPY(windowTiles, widthOffset, currX + 8, currY + 8, glyphPixels + 24, glyphWidth - 8, glyphHeight - 8);
+         }
+     }
++#ifdef PLATFORM_3DS
++    CtrHdText_CopyGlyph(textPrinter->printerTemplate.windowId, currX, currY, glyphWidth, glyphHeight);
++#endif
+ }
+ 
+ void ClearTextSpan(struct TextPrinter *textPrinter, u32 width)
+@@ -1747,6 +1893,9 @@
+ 
+ static void DecompressGlyph_Small(u16 glyphId, bool32 isJapanese)
+ {
++#ifdef PLATFORM_3DS
++    sCtrHdFont = -1;
++#endif
+     const u16 *glyphs;
+ 
+     if (isJapanese == 1)
+@@ -1771,6 +1920,10 @@
+ #endif
+         glyphs += (0x20 * glyphId);
+         gCurGlyph.width = gFontSmallLatinGlyphWidths[glyphId];
++#ifdef PLATFORM_3DS
++        sCtrHdFont = 0;
++        sCtrHdGlyph = glyphId;
++#endif
+ 
+         if (gCurGlyph.width <= 8)
+         {
+@@ -1799,6 +1952,9 @@
+ 
+ static void DecompressGlyph_Narrow(u16 glyphId, bool32 isJapanese)
+ {
++#ifdef PLATFORM_3DS
++    sCtrHdFont = -1;
++#endif
+     const u16 *glyphs;
+ 
+     if (isJapanese == TRUE)
+@@ -1823,6 +1979,10 @@
+ #endif
+         glyphs += (0x20 * glyphId);
+         gCurGlyph.width = gFontNarrowLatinGlyphWidths[glyphId];
++#ifdef PLATFORM_3DS
++        sCtrHdFont = 3;
++        sCtrHdGlyph = glyphId;
++#endif
+ 
+         if (gCurGlyph.width <= 8)
+         {
+@@ -1851,6 +2011,9 @@
+ 
+ static void DecompressGlyph_SmallNarrow(u16 glyphId, bool32 isJapanese)
+ {
++#ifdef PLATFORM_3DS
++    sCtrHdFont = -1;
++#endif
+     const u16 *glyphs;
+ 
+     if (isJapanese == TRUE)
+@@ -1875,6 +2038,10 @@
+ #endif
+         glyphs += (0x20 * glyphId);
+         gCurGlyph.width = gFontSmallNarrowLatinGlyphWidths[glyphId];
++#ifdef PLATFORM_3DS
++        sCtrHdFont = 4;
++        sCtrHdGlyph = glyphId;
++#endif
+ 
+         if (gCurGlyph.width <= 8)
+         {
+@@ -1903,6 +2070,9 @@
+ 
+ static void DecompressGlyph_Short(u16 glyphId, bool32 isJapanese)
+ {
++#ifdef PLATFORM_3DS
++    sCtrHdFont = -1;
++#endif
+     const u16 *glyphs;
+ 
+     if (isJapanese == TRUE)
+@@ -1929,6 +2099,10 @@
+ #endif
+         glyphs += (0x20 * glyphId);
+         gCurGlyph.width = gFontShortLatinGlyphWidths[glyphId];
++#ifdef PLATFORM_3DS
++        sCtrHdFont = 2;
++        sCtrHdGlyph = glyphId;
++#endif
+ 
+         if (gCurGlyph.width <= 8)
+         {
+@@ -1957,6 +2131,9 @@
+ 
+ static void DecompressGlyph_Normal(u16 glyphId, bool32 isJapanese)
+ {
++#ifdef PLATFORM_3DS
++    sCtrHdFont = -1;
++#endif
+     const u16 *glyphs;
+ 
+     if (isJapanese == TRUE)
+@@ -1981,6 +2158,10 @@
+ #endif
+         glyphs += (0x20 * glyphId);
+         gCurGlyph.width = gFontNormalLatinGlyphWidths[glyphId];
++#ifdef PLATFORM_3DS
++        sCtrHdFont = 1;
++        sCtrHdGlyph = glyphId;
++#endif
+ 
+         if (gCurGlyph.width <= 8)
+         {
+diff --git a/src/window.c b/src/window.c
+--- a/src/window.c
++++ b/src/window.c
+@@ -448,6 +448,9 @@
+     pixelRect.height = 8 * gWindows[windowId].window.height;
+ 
+     FillBitmapRect4Bit(&pixelRect, x, y, width, height, fillValue);
++#ifdef PLATFORM_3DS
++    CtrHdText_Sync(windowId, x, y, width, height); // text.c: its upscaled copy
++#endif
+ }
+ 
+ void CopyToWindowPixelBuffer(u8 windowId, const void *src, u16 size, u16 tileOffset)
+@@ -467,6 +470,9 @@
+ #endif
+     int fillSize = gWindows[windowId].window.width * gWindows[windowId].window.height;
+     CpuFastFill8(fillValue, gWindows[windowId].tileData, 32 * fillSize);
++#ifdef PLATFORM_3DS
++    CtrHdText_Sync(windowId, 0, 0, gWindows[windowId].window.width * 8, gWindows[windowId].window.height * 8);
++#endif
+ }
+ 
+ #define MOVE_TILES_DOWN(a)                                                      \
+diff --git a/include/text.h b/include/text.h
+--- a/include/text.h
++++ b/include/text.h
+@@ -168,4 +168,8 @@
+ u16 FontFunc_Braille(struct TextPrinter *textPrinter);
+ u32 GetGlyphWidth_Braille(u16 glyphId, bool32 isJapanese);
+ 
++#ifdef PLATFORM_3DS
++void CtrHdText_Sync(u8 windowId, u32 x, u32 y, u32 width, u32 height);
++#endif
++
+ #endif // GUARD_TEXT_H

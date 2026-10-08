@@ -32,7 +32,7 @@
 #define HASH_SLOTS 16384 /* power of two, a few times the frames hashed (x8 each) */
 #define MAX_PICS 1024
 #define NUM_INSTANCES 16
-#define NUM_DECODED 6
+#define NUM_DECODED 8
 #define NUM_TEXTURES 8
 
 typedef struct
@@ -59,6 +59,7 @@ typedef struct
 typedef struct
 {
     int entry;
+    bool hd;           /* from the upscaled pack */
     uint8_t *frames;   /* numFrames x frameBytes */
     uint16_t *seq;     /* (frame, duration) pairs */
     uint16_t palettes[32];
@@ -76,6 +77,8 @@ typedef struct
 {
     C3D_Tex tex;
     unsigned size;
+    bool upscaled;   /* at 1.5x rather than 1x */
+    bool upscaledFrom; /* what its pixels were made from */
     unsigned oamIndex;
     int decoded, frame;
     uint16_t colors[16];
@@ -99,6 +102,51 @@ static bool sShiny[16]; /* last normal/shiny decision per palette */
 static bool sBgShiny[16]; /* the same for background palettes (CtrBw_PrepareBg) */
 static uint32_t sFrame;
 static bool sTried;
+static bool sUpscale;
+static uint8_t FramePixel(const PackEntry *e, const uint8_t *frame, int x, int y);
+
+void CtrBw_SetUpscale(bool upscale)
+{
+    sUpscale = upscale;
+}
+
+/*
+ * In the battle, drawn at 1.5 (3ds_video.c), a frame comes from the upscaled
+ * pack instead: bw_sprites_hd.pack, every frame of the same entries upscaled
+ * 3x ahead of time (scripts/make_hd_bw.c), averaged 2x2 here into 1.5x with
+ * the colours of the moment. The entries' places and sizes stay the plain
+ * pack's; the upscaled pack only gives the pictures.
+ */
+static FILE *sPackHd;
+static long sPackHdSize;
+static PackEntry *sEntriesHd;
+
+static void AverageFrame(const PackEntry *e, const uint8_t *pixels, const uint16_t *colors, uint16_t *data,
+                         unsigned size)
+{
+    int w = e->width, h = e->height, ow = (w + 1) / 2, oh = (h + 1) / 2;
+
+    for (int y = 0; y < oh; y++)
+        for (int x = 0; x < ow; x++)
+        {
+            unsigned r = 0, g = 0, b = 0, n = 0;
+
+            for (int k = 0; k < 4; k++)
+            {
+                int bx = x * 2 + k % 2, by = y * 2 + k / 2;
+                uint8_t c;
+
+                if (bx >= w || by >= h || !(c = FramePixel(e, pixels, bx, by))) continue;
+                r += colors[c] & 31;
+                g += (colors[c] >> 5) & 31;
+                b += (colors[c] >> 10) & 31;
+                n++;
+            }
+            /* RGBA5551: opaque where most of the texel is covered. */
+            data[CtrVideo_Texel((unsigned)x, (unsigned)y, size)] =
+                n >= 2 ? (uint16_t)(((r + n / 2) / n) << 11 | ((g + n / 2) / n) << 6 | ((b + n / 2) / n) << 1 | 1) : 0;
+        }
+}
 
 /* ── Pack ────────────────────────────────────────────────────────────────── */
 
@@ -124,6 +172,29 @@ bool CtrBw_Init(void)
         || header[2] == 0 || header[2] > 4096)
         goto fail;
     sNumEntries = header[2];
+    /* The upscaled pictures, if there: the same entries, version 2. */
+    sPackHd = fopen(CTR_BW_HD_PACK_PATH, "rb");
+    if (sPackHd)
+    {
+        uint32_t hd[4];
+
+        fseek(sPackHd, 0, SEEK_END);
+        sPackHdSize = ftell(sPackHd);
+        fseek(sPackHd, 0, SEEK_SET);
+        sEntriesHd = malloc(sNumEntries * sizeof(PackEntry));
+        if (fread(hd, 1, sizeof(hd), sPackHd) != sizeof(hd) || memcmp(hd, "BWSP", 4) || hd[1] != 2
+            || hd[2] != sNumEntries || !sEntriesHd
+            || fread(sEntriesHd, sizeof(PackEntry), sNumEntries, sPackHd) != sNumEntries)
+        {
+            CtrLog_Write(CTR_LOG_ERROR, "bw: bw_sprites_hd.pack does not match bw_sprites.pack, not used");
+            fclose(sPackHd);
+            sPackHd = NULL;
+            free(sEntriesHd);
+            sEntriesHd = NULL;
+        }
+        else
+            CtrLog_Write(CTR_LOG_VIDEO, "bw: upscaled pictures for the battle (%ld bytes)", sPackHdSize);
+    }
     sEntries = malloc(sNumEntries * sizeof(PackEntry));
     sPics = calloc(MAX_PICS, sizeof(MonPic));
     sTable = calloc(HASH_SLOTS, sizeof(*sTable));
@@ -167,9 +238,9 @@ static int FindEntry(uint16_t dex, uint8_t form, uint8_t side)
     return -1;
 }
 
-static bool ReadAt(uint32_t offset, void *dest, uint32_t size)
+static bool ReadFrom(FILE *pack, uint32_t offset, void *dest, uint32_t size)
 {
-    return fseek(sPack, (long)offset, SEEK_SET) == 0 && fread(dest, 1, size, sPack) == size;
+    return fseek(pack, (long)offset, SEEK_SET) == 0 && fread(dest, 1, size, pack) == size;
 }
 
 /* GBA LZ77 (type 0x10); false if it doesn't make exactly `size` bytes. */
@@ -217,11 +288,20 @@ static bool Lz77(const uint8_t *src, const uint8_t *end, uint8_t *dest, uint32_t
 
 /* The entry's decoded frames (decoding them, if need be, over the least
  * recently used). */
+static Decoded *DecodeFrom(int entry, bool hd);
+
 static Decoded *Decode(int entry)
 {
-    const PackEntry *e = &sEntries[entry];
+    return DecodeFrom(entry, false);
+}
+
+static Decoded *DecodeFrom(int entry, bool hd)
+{
+    const PackEntry *entries = hd ? sEntriesHd : sEntries;
+    const PackEntry *e = &entries[entry];
     uint32_t frameBytes = (e->width + 1) / 2 * e->height;
-    uint32_t blobEnd = entry + 1 < (int)sNumEntries ? sEntries[entry + 1].palettesOffset : (uint32_t)sPackSize;
+    uint32_t blobEnd = entry + 1 < (int)sNumEntries ? entries[entry + 1].palettesOffset
+                                                    : (uint32_t)(hd ? sPackHdSize : sPackSize);
     Decoded *slot = NULL;
     uint32_t *offsets = NULL;
     uint8_t *blob = NULL;
@@ -229,7 +309,7 @@ static Decoded *Decode(int entry)
 
     for (i = 0; i < NUM_DECODED; i++)
     {
-        if (sDecoded[i].frames && sDecoded[i].entry == entry)
+        if (sDecoded[i].frames && sDecoded[i].entry == entry && sDecoded[i].hd == hd)
         {
             sDecoded[i].lastUsed = sFrame;
             return &sDecoded[i];
@@ -245,12 +325,13 @@ static Decoded *Decode(int entry)
     free(slot->seq);
     memset(slot, 0, sizeof(*slot));
 
-    if (blobEnd <= e->palettesOffset || blobEnd - e->palettesOffset > 4u << 20)
+    if (blobEnd <= e->palettesOffset || blobEnd - e->palettesOffset > (hd ? 32u : 4u) << 20)
         return NULL;
     blob = malloc(blobEnd - e->palettesOffset);
     slot->frames = malloc(frameBytes * e->numFrames);
     slot->seq = malloc(e->seqLength * 4);
-    if (!blob || !slot->frames || !slot->seq || !ReadAt(e->palettesOffset, blob, blobEnd - e->palettesOffset))
+    if (!blob || !slot->frames || !slot->seq
+        || !ReadFrom(hd ? sPackHd : sPack, e->palettesOffset, blob, blobEnd - e->palettesOffset))
         goto fail;
     memcpy(slot->palettes, blob, 64);
     memcpy(slot->seq, blob + (e->seqOffset - e->palettesOffset), e->seqLength * 4);
@@ -266,10 +347,11 @@ static Decoded *Decode(int entry)
         /* Each frame is stored as the difference from the one before. */
         if (i > 0)
             for (uint32_t b = 0; b < frameBytes; b++)
-                frame[b] ^= frame[b - frameBytes];
+                frame[b] ^= (frame - frameBytes)[b];
     }
     free(blob);
     slot->entry = entry;
+    slot->hd = hd;
     slot->lastUsed = sFrame;
     return slot;
 
@@ -568,8 +650,13 @@ static Texture *TextureFor(unsigned index, Decoded *d, int frame, const uint16_t
     unsigned size = 64;
     Texture *t = NULL;
     int i;
+    /* In the battle, the upscaled frame: 1.5 texels a pixel. */
+    Decoded *hd = sUpscale && sPackHd ? DecodeFrom(d->entry, true) : NULL;
+    const PackEntry *eh = hd ? &sEntriesHd[d->entry] : NULL;
+    int texelsW = hd ? (eh->width + 1) / 2 : e->width, texelsH = hd ? (eh->height + 1) / 2 : e->height;
+    bool upscaled = hd != NULL;
 
-    while (size < e->width || size < e->height)
+    while (size < (unsigned)texelsW || size < (unsigned)texelsH)
         size *= 2;
     for (i = 0; i < NUM_TEXTURES; i++)
         if (sTextures[i].used && sTextures[i].oamIndex == index)
@@ -584,7 +671,7 @@ static Texture *TextureFor(unsigned index, Decoded *d, int frame, const uint16_t
         t->decoded = -1;
     }
     t->lastUsed = sFrame;
-    if (t->size != size)
+    if (t->size != size || t->upscaled != upscaled)
     {
         if (t->tex.data)
             C3D_TexDelete(&t->tex);
@@ -600,22 +687,31 @@ static Texture *TextureFor(unsigned index, Decoded *d, int frame, const uint16_t
         C3D_TexSetWrap(&t->tex, GPU_CLAMP_TO_EDGE, GPU_CLAMP_TO_EDGE);
         memset(t->tex.data, 0, size * size * 2);
         t->size = size;
+        t->upscaled = upscaled;
         t->decoded = -1;
     }
-    if (t->decoded != decoded || t->frame != frame || memcmp(t->colors, colors, 32))
+    if (t->decoded != decoded || t->frame != frame || memcmp(t->colors, colors, 32) || t->upscaledFrom != upscaled)
     {
         const uint8_t *pixels = d->frames + (uint32_t)frame * ((e->width + 1) / 2) * e->height;
-        uint16_t *data = t->tex.data, rgba[16];
 
-        rgba[0] = 0;
-        for (i = 1; i < 16; i++)
-            rgba[i] = CtrVideo_RGBA5551(colors[i]);
-        for (int y = 0; y < e->height; y++)
-            for (int x = 0; x < e->width; x++)
-                data[CtrVideo_Texel(x, y, size)] = rgba[FramePixel(e, pixels, x, y)];
+        if (t->upscaled)
+            AverageFrame(eh, hd->frames + (uint32_t)frame * ((eh->width + 1) / 2) * eh->height, colors, t->tex.data,
+                         size);
+        else
+        {
+            uint16_t *data = t->tex.data, rgba[16];
+
+            rgba[0] = 0;
+            for (i = 1; i < 16; i++)
+                rgba[i] = CtrVideo_RGBA5551(colors[i]);
+            for (int y = 0; y < e->height; y++)
+                for (int x = 0; x < e->width; x++)
+                    data[CtrVideo_Texel(x, y, size)] = rgba[FramePixel(e, pixels, x, y)];
+        }
         C3D_TexFlush(&t->tex);
         t->decoded = decoded;
         t->frame = frame;
+        t->upscaledFrom = upscaled;
         memcpy(t->colors, colors, 32);
     }
     return t;
@@ -674,10 +770,11 @@ static bool FinishSprite(unsigned texIndex, int pic, uint8_t rows, uint32_t star
         out->height = rows * 8 - out->top;
     if (out->height <= 0)
         return false;
+    out->scale = t->upscaled ? 1.5f : 1.0f;
     out->u0 = 0;
     out->v0 = 1.0f;
-    out->u1 = e->width / (float)t->size;
-    out->v1 = 1.0f - out->height / (float)t->size;
+    out->u1 = e->width * out->scale / (float)t->size;
+    out->v1 = 1.0f - out->height * out->scale / (float)t->size;
     return true;
 }
 

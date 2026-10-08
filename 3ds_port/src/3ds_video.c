@@ -333,6 +333,11 @@ typedef struct
     uint32_t colors[8];
     /* Bumped on every upload (new bytes or new palette), never reused. */
     uint32_t serial;
+    /* Its upscaled version (HdFind): an entry of hd_tiles.pack or of the
+     * tiles registered from the game's text, its 32 bytes then its 3x;
+     * NULL for none. Looked for when first drawn upscaled (hdLooked). */
+    const uint8_t *hd;
+    bool hdLooked;
     bool valid, visible;
 } Tile;
 static uint32_t sTileSerial;
@@ -1054,6 +1059,8 @@ static int GetTileSlot(unsigned address, unsigned bank, bool color256)
                 && memcmp(tile->bytes, sMemory.vram + address, bytes)))
         {
             memcpy(tile->bytes, sMemory.vram + address, bytes);
+            tile->hd = NULL;
+            tile->hdLooked = color256; /* 256-colour tiles have none */
             unsigned paletteBase = color256 ? (bank >= 16 ? 256 : 0) : bank * 16;
             uint16_t *dest = (uint16_t *)sAtlas.data + slot * 64;
             memset(tile->colors, 0, sizeof(tile->colors));
@@ -1104,6 +1111,319 @@ static void DrawSlotTinted(int slot, float x, float y, bool flipX, bool flipY, c
 static void DrawSlot(int slot, float x, float y, bool flipX, bool flipY)
 {
     DrawSlotTinted(slot, x, y, flipX, flipY, &sTint);
+}
+
+/*
+ * The battle's art upscaled. The battle is drawn at CTR_BATTLE_ZOOM (1.5),
+ * where the GBA's 8x8 tiles would come out 12 screen pixels of uneven
+ * columns. Its art was upscaled ahead of time instead (scripts/
+ * make_hd_tiles.py, hd_tiles.pack on the SD card): every tile 3x with
+ * Scale3x in the picture it belongs to, still as colour indices. A tile the
+ * game loads is found there by its 32 bytes (HdFind, once, as it is cached);
+ * as it is drawn its 24x24 is averaged 2x2 into 12x12 with the palette it
+ * has now, into an atlas of its own, and drawn on whole screen pixels, a
+ * texel each. Tiles not in the pack - text the game draws, art from outside
+ * the battle - are drawn as before.
+ */
+static void ViewBase(void);
+
+#define HD_TEXELS 12            /* a tile's side drawn, and its atlas cell's */
+#define HD_ATLAS 1024
+#define HD_ROW (HD_ATLAS / HD_TEXELS)
+#define HD_SLOTS (HD_ROW * HD_ROW)
+#define HD_ENTRY_BYTES (32 + 288)
+static C3D_Tex sHdAtlas;
+static bool sHdReady, sHdFailed;
+/* On while composing the battle (CtrVideo_Present). */
+static bool sHd;
+/* The view is the screen's own (HdDrawSlot) until the next ViewBase. */
+static bool sHdScreenView;
+/* The pack, read whole: its index (hash, offset), entries and fonts. */
+static uint8_t *sHdPack;
+static uint32_t sHdCount, sHdFonts;
+static long sHdPackSize;
+/*
+ * Tiles the game registers (CtrVideo_RegisterHdTile): the battle's text,
+ * drawn with upscaled glyphs as it is drawn with the font's (text.c). Kept by
+ * their 32 bytes, newest over oldest, round a fixed set.
+ */
+#define HD_TEXT_TILES 2048
+#define HD_TEXT_HASH 4096
+static uint8_t (*sHdText)[HD_ENTRY_BYTES];
+static uint64_t sHdTextHash[HD_TEXT_TILES];
+static int16_t sHdTextNextInChain[HD_TEXT_TILES];
+static int16_t sHdTextBucket[HD_TEXT_HASH];
+static unsigned sHdTextNext;
+/* Atlas cells: the tile cache slot and serial each shows, and the cell each
+ * tile cache slot has (-1 for none). */
+static struct { int32_t tile; uint32_t serial; } sHdCells[HD_SLOTS];
+static int16_t sHdCellOf[CACHE_COUNT];
+static unsigned sHdNext;
+/* For the log: tiles drawn upscaled, made. */
+static uint32_t sHdDrawn, sHdMade;
+
+static bool HdInit(void)
+{
+    FILE *file;
+
+    if (sHdReady) return true;
+    if (sHdFailed) return false;
+    sHdFailed = true;
+    file = CtrFs_OpenData("hd_tiles.pack", "rb");
+    if (!file)
+    {
+        CtrLog_Write(CTR_LOG_VIDEO, "VIDEO: no hd_tiles.pack; the battle's art is drawn as it is");
+        return false;
+    }
+    fseek(file, 0, SEEK_END);
+    sHdPackSize = ftell(file);
+    fseek(file, 0, SEEK_SET);
+    sHdPack = sHdPackSize > 16 ? malloc((size_t)sHdPackSize) : NULL;
+    if (!sHdPack || fread(sHdPack, 1, (size_t)sHdPackSize, file) != (size_t)sHdPackSize
+        || memcmp(sHdPack, "HDTP", 4) || ((uint32_t *)sHdPack)[1] != 2
+        || 16 + (uint64_t)((uint32_t *)sHdPack)[2] * 16 > (uint64_t)sHdPackSize
+        || ((uint32_t *)sHdPack)[3] + 4 > (uint32_t)sHdPackSize)
+    {
+        fclose(file);
+        free(sHdPack);
+        sHdPack = NULL;
+        CtrLog_Write(CTR_LOG_ERROR, "VIDEO: hd_tiles.pack unreadable");
+        return false;
+    }
+    fclose(file);
+    sHdCount = ((uint32_t *)sHdPack)[2];
+    sHdFonts = ((uint32_t *)sHdPack)[3];
+    /* RGBA5551, 2 MiB of the linear heap: averaged colours, an edge texel
+     * opaque where most of it is covered. */
+    if (!C3D_TexInit(&sHdAtlas, HD_ATLAS, HD_ATLAS, GPU_RGBA5551))
+    {
+        free(sHdPack);
+        sHdPack = NULL;
+        CtrLog_Write(CTR_LOG_ERROR, "VIDEO: no memory for the upscaled battle art; drawn as it is");
+        return false;
+    }
+    C3D_TexSetFilter(&sHdAtlas, GPU_NEAREST, GPU_NEAREST);
+    C3D_TexSetWrap(&sHdAtlas, GPU_CLAMP_TO_EDGE, GPU_CLAMP_TO_EDGE);
+    memset(sHdAtlas.data, 0, HD_ATLAS * HD_ATLAS * 2);
+    for (unsigned i = 0; i < HD_SLOTS; ++i) sHdCells[i].tile = -1;
+    for (unsigned i = 0; i < CACHE_COUNT; ++i) sHdCellOf[i] = -1;
+    sHdReady = true;
+    sHdFailed = false;
+    CtrLog_Write(CTR_LOG_VIDEO, "VIDEO: upscaled battle art: %lu tiles", (unsigned long)sHdCount);
+    return true;
+}
+
+static uint64_t HdHash(const uint8_t *bytes)
+{
+    uint64_t hash = 0xCBF29CE484222325ull;
+
+    for (unsigned i = 0; i < 32; ++i)
+        hash = (hash ^ bytes[i]) * 0x100000001B3ull;
+    return hash;
+}
+
+void CtrVideo_RegisterHdTile(const uint8_t *tile, const uint8_t *hd)
+{
+    uint64_t hash = HdHash(tile);
+    unsigned bucket = (unsigned)(hash & (HD_TEXT_HASH - 1));
+    int found;
+
+    if (!sHdText)
+    {
+        sHdText = malloc(sizeof(*sHdText) * HD_TEXT_TILES);
+        if (!sHdText) return;
+        for (unsigned i = 0; i < HD_TEXT_HASH; ++i) sHdTextBucket[i] = -1;
+        for (unsigned i = 0; i < HD_TEXT_TILES; ++i) sHdTextNextInChain[i] = -2;
+    }
+    for (found = sHdTextBucket[bucket]; found >= 0; found = sHdTextNextInChain[found])
+        if (sHdTextHash[found] == hash && !memcmp(sHdText[found], tile, 32))
+        {
+            memcpy(sHdText[found] + 32, hd, HD_ENTRY_BYTES - 32);
+            return;
+        }
+    /* The next slot round, its last tile let go. */
+    found = (int)sHdTextNext;
+    sHdTextNext = (sHdTextNext + 1) % HD_TEXT_TILES;
+    if (sHdTextNextInChain[found] != -2)
+    {
+        int16_t *link = &sHdTextBucket[sHdTextHash[found] & (HD_TEXT_HASH - 1)];
+
+        while (*link >= 0 && *link != found) link = &sHdTextNextInChain[*link];
+        if (*link == found) *link = sHdTextNextInChain[found];
+    }
+    memcpy(sHdText[found], tile, 32);
+    memcpy(sHdText[found] + 32, hd, HD_ENTRY_BYTES - 32);
+    sHdTextHash[found] = hash;
+    sHdTextNextInChain[found] = sHdTextBucket[bucket];
+    sHdTextBucket[bucket] = (int16_t)found;
+}
+
+/* A glyph of one of the pack's fonts (small, normal, short, narrow, small
+ * narrow): its 16x16 cell and 48x48 upscale, 4bpp; false without one. */
+bool CtrVideo_HdGlyph(unsigned font, unsigned glyph, const uint8_t **cell, const uint8_t **big)
+{
+    uint32_t at, fonts, glyphs;
+
+    if (!HdInit() || !sHdFonts) return false;
+    at = sHdFonts;
+    memcpy(&fonts, sHdPack + at, 4);
+    at += 4;
+    if (font >= fonts) return false;
+    for (unsigned f = 0;; ++f)
+    {
+        if (at + 4 > (uint32_t)sHdPackSize) return false;
+        memcpy(&glyphs, sHdPack + at, 4);
+        at += 4;
+        if (f == font) break;
+        at += glyphs * (128 + 1152);
+    }
+    if (glyph >= glyphs || at + (glyph + 1) * (128 + 1152) > (uint32_t)sHdPackSize) return false;
+    *cell = sHdPack + at + glyph * (128 + 1152);
+    *big = *cell + 128;
+    return true;
+}
+
+/* A tile's upscaled version by its 4bpp bytes: registered text first, then
+ * the pack; NULL for none. */
+static const uint8_t *HdFind(const uint8_t *bytes)
+{
+    uint64_t hash = HdHash(bytes);
+    uint32_t lo = 0, hi;
+
+    if (sHdText)
+        for (int found = sHdTextBucket[hash & (HD_TEXT_HASH - 1)]; found >= 0; found = sHdTextNextInChain[found])
+            if (sHdTextHash[found] == hash && !memcmp(sHdText[found], bytes, 32))
+                return sHdText[found];
+    if (!sHdPack) return NULL;
+    hi = sHdCount;
+    while (lo < hi)
+    {
+        uint32_t mid = (lo + hi) / 2;
+        uint64_t h;
+
+        memcpy(&h, sHdPack + 16 + mid * 16, 8);
+        if (h < hash) lo = mid + 1;
+        else hi = mid;
+    }
+    for (; lo < sHdCount; ++lo)
+    {
+        uint64_t h;
+        uint32_t offset;
+
+        memcpy(&h, sHdPack + 16 + lo * 16, 8);
+        if (h != hash) break;
+        memcpy(&offset, sHdPack + 16 + lo * 16 + 8, 4);
+        if (offset + HD_ENTRY_BYTES <= (uint32_t)sHdPackSize && !memcmp(sHdPack + offset, bytes, 32))
+            return sHdPack + offset;
+    }
+    return NULL;
+}
+
+/* The atlas cell of a cached tile's upscaled version, made for its present
+ * pixels and palette if need be; -1 if the tile has none. */
+static int HdCellFor(int slot)
+{
+    Tile *tile = &sTiles[slot];
+    int cell = sHdCellOf[slot];
+    unsigned paletteBase;
+    const uint8_t *hd;
+    uint16_t *data;
+    unsigned x0, y0;
+
+    if (!tile->hdLooked)
+    {
+        tile->hd = HdFind(tile->bytes);
+        tile->hdLooked = true;
+    }
+    if (!tile->hd) return -1;
+    if (cell >= 0 && sHdCells[cell].tile == slot && sHdCells[cell].serial == tile->serial) return cell;
+    if (cell < 0 || sHdCells[cell].tile != slot)
+    {
+        /* The next cell round the atlas, its last tile let go. */
+        cell = (int)sHdNext;
+        sHdNext = (sHdNext + 1) % HD_SLOTS;
+        if (sHdCells[cell].tile >= 0) sHdCellOf[sHdCells[cell].tile] = -1;
+        sHdCells[cell].tile = slot;
+        sHdCellOf[slot] = (int16_t)cell;
+    }
+    sHdCells[cell].serial = tile->serial;
+    paletteBase = ((tile->key - 1) % PALETTE_IDS) * 16;
+    hd = tile->hd + 32;
+    data = (uint16_t *)sHdAtlas.data;
+    x0 = (unsigned)(cell % HD_ROW) * HD_TEXELS;
+    y0 = (unsigned)(cell / HD_ROW) * HD_TEXELS;
+    /* Every 2x2 of the 24x24 averaged, weighted by its coverage. */
+    for (unsigned y = 0; y < HD_TEXELS; ++y)
+        for (unsigned x = 0; x < HD_TEXELS; ++x)
+        {
+            unsigned r = 0, g = 0, b = 0, n = 0;
+
+            for (unsigned k = 0; k < 4; ++k)
+            {
+                unsigned bx = x * 2 + (k & 1), by = y * 2 + k / 2;
+                unsigned index = (hd[by * 12 + bx / 2] >> ((bx & 1) * 4)) & 15;
+                uint16_t c;
+
+                if (!index || !((c = sTexturePalette[paletteBase + index]) & 1)) continue;
+                r += (c >> 11) & 31;
+                g += (c >> 6) & 31;
+                b += (c >> 1) & 31;
+                ++n;
+            }
+            data[CtrVideo_Texel(x0 + x, y0 + y, HD_ATLAS)] =
+                n >= 2 ? (uint16_t)(((r + n / 2) / n) << 11 | ((g + n / 2) / n) << 6 | ((b + n / 2) / n) << 1 | 1) : 0;
+        }
+    ++sHdMade;
+    ++sStats.uploads;
+    return cell;
+}
+
+/*
+ * A cached tile upscaled at GBA (x, y), where its tile would have been drawn;
+ * false if it has no upscaled version (then it is to be drawn as it is). On
+ * whole screen pixels, unless an affine sprite's matrix is in place (local:
+ * the view as it is).
+ */
+static bool HdDrawSlot(int slot, bool flipX, bool flipY, float x, float y, bool local)
+{
+    int cell;
+    unsigned x0, y0;
+    Tex3DS_SubTexture sub;
+    float size;
+
+    if (slot < 0 || !HdInit() || (cell = HdCellFor(slot)) < 0)
+        return false;
+    x0 = (unsigned)(cell % HD_ROW) * HD_TEXELS;
+    y0 = (unsigned)(cell / HD_ROW) * HD_TEXELS;
+    sub.width = HD_TEXELS;
+    sub.height = HD_TEXELS;
+    sub.left = (flipX ? x0 + HD_TEXELS : x0) / (float)HD_ATLAS;
+    sub.right = (flipX ? x0 : x0 + HD_TEXELS) / (float)HD_ATLAS;
+    sub.top = 1.0f - (flipY ? y0 + HD_TEXELS : y0) / (float)HD_ATLAS;
+    sub.bottom = 1.0f - (flipY ? y0 : y0 + HD_TEXELS) / (float)HD_ATLAS;
+    if (++sStats.tiles >= MAX_DRAWS - 32)
+    {
+        Error(2, "GPU geometry budget exceeded");
+        return true;
+    }
+    ++sHdDrawn;
+    if (local)
+    {
+        size = 8.0f / HD_TEXELS;
+        C2D_DrawImageAt((C2D_Image){&sHdAtlas, &sub}, x, y, 0, &sTint, size, size);
+        return true;
+    }
+    /* On whole pixels: each texel one screen pixel at 1.5. The screen's view
+     * stays until something asks for the base one (ViewBase). */
+    size = 8.0f * sZoom / HD_TEXELS;
+    if (!sHdScreenView)
+    {
+        C2D_ViewReset();
+        sHdScreenView = true;
+    }
+    C2D_DrawImageAt((C2D_Image){&sHdAtlas, &sub}, floorf(x * sZoom + sOffX + 0.5f), floorf(y * sZoom + sOffY + 0.5f),
+                    0, &sTint, size, size);
+    return true;
 }
 
 static void Blend(unsigned layer, bool effects, bool semiTransparent)
@@ -1199,6 +1519,7 @@ static int sSpanShiftX, sSpanShiftY;
  * (the 1:1 battle has an offset alone). */
 static void ViewBase(void)
 {
+    sHdScreenView = false;
     C2D_ViewReset();
     if (sZoom != 1.0f || sOffX != 0.0f || sOffY != 0.0f)
     {
@@ -1282,11 +1603,16 @@ static void DrawTextSpanAt(unsigned bg, int left, int right, int top, int bottom
 
                 if (mirrorX2 >= 0) { dx = mirrorX2 - px - 8; flipX = !flipX; }
                 if (mirrorY2 >= 0) { dy = mirrorY2 - py - 8; flipY = !flipY; }
+                if (sHd && bg != 0 && HdDrawSlot(slot, flipX, flipY, dx + sSpanShiftX + CTR_VIEW_X + sLayerShift,
+                                                 dy + sSpanShiftY + CTR_VIEW_Y, false))
+                    continue;
+                if (sHdScreenView) ViewBase();
                 DrawSlot(slot, dx + sSpanShiftX + CTR_VIEW_X + sLayerShift, dy + sSpanShiftY + CTR_VIEW_Y,
                          flipX, flipY);
             }
         }
     }
+    if (sHdScreenView) ViewBase();
 }
 
 static void DrawTextSpan(unsigned bg, int left, int right, int top, int bottom)
@@ -2025,10 +2351,15 @@ static void DrawBattleTiled(unsigned bg, unsigned across, unsigned down)
             unsigned entry = MapEntry(map, size, (unsigned)((scrollX >> 3) + column), (unsigned)((scrollY >> 3) + row));
             int slot = EntrySlot(chars, entry, color256);
 
-            if (slot >= 0)
-                DrawSlot(slot, px + CTR_VIEW_X + sLayerShift, py + CTR_VIEW_Y, entry & 1024, entry & 2048);
+            if (slot < 0) continue;
+            if (sHd && HdDrawSlot(slot, entry & 1024, entry & 2048, px + CTR_VIEW_X + sLayerShift, py + CTR_VIEW_Y,
+                                  false))
+                continue;
+            if (sHdScreenView) ViewBase();
+            DrawSlot(slot, px + CTR_VIEW_X + sLayerShift, py + CTR_VIEW_Y, entry & 1024, entry & 2048);
         }
     }
+    if (sHdScreenView) ViewBase();
 }
 
 static void DrawBattleBg(unsigned bg)
@@ -2106,10 +2437,15 @@ static void DrawBattleBg(unsigned bg)
                 lastEntry = entry;
                 lastSlot = EntrySlot(chars, entry, color256);
             }
-            if (lastSlot >= 0)
-                DrawSlot(lastSlot, px + CTR_VIEW_X + sLayerShift, py + CTR_VIEW_Y, entry & 1024, entry & 2048);
+            if (lastSlot < 0) continue;
+            if (sHd && HdDrawSlot(lastSlot, entry & 1024, entry & 2048, px + CTR_VIEW_X + sLayerShift,
+                                  py + CTR_VIEW_Y, false))
+                continue;
+            if (sHdScreenView) ViewBase();
+            DrawSlot(lastSlot, px + CTR_VIEW_X + sLayerShift, py + CTR_VIEW_Y, entry & 1024, entry & 2048);
         }
     }
+    if (sHdScreenView) ViewBase();
 }
 
 /*
@@ -3850,8 +4186,22 @@ static bool DrawBwObject(unsigned index, const uint16_t *obj, int x, int y, unsi
             sub.top = bw.v1;
             sub.bottom = bw.v0;
         }
-        C2D_DrawImageAt((C2D_Image){(C3D_Tex *)bw.tex, &sub}, x + CTR_VIEW_X + sLayerShift + left,
-                        y + CTR_VIEW_Y + top, 0, &sTint, 1, 1);
+        if (bw.scale != 1.0f)
+        {
+            /* Upscaled: a texel a screen pixel, on whole pixels. */
+            float k = sZoom / bw.scale;
+
+            sub.width = (u16)(bw.width * bw.scale + 0.5f);
+            sub.height = (u16)(bw.height * bw.scale + 0.5f);
+            C2D_ViewReset();
+            C2D_DrawImageAt((C2D_Image){(C3D_Tex *)bw.tex, &sub},
+                            floorf((x + CTR_VIEW_X + sLayerShift + left) * sZoom + sOffX + 0.5f),
+                            floorf((y + CTR_VIEW_Y + top) * sZoom + sOffY + 0.5f), 0, &sTint, k, k);
+            ViewBase();
+        }
+        else
+            C2D_DrawImageAt((C2D_Image){(C3D_Tex *)bw.tex, &sub}, x + CTR_VIEW_X + sLayerShift + left,
+                            y + CTR_VIEW_Y + top, 0, &sTint, 1, 1);
     }
     ++sStats.tiles;
     return true;
@@ -4148,6 +4498,16 @@ static bool DrawAboveWideBox(unsigned bg, const WideBox *box, int lift, int clip
     return true;
 }
 
+/* The last affine sprite's matrix, before the zoom (ViewAffine). */
+static C3D_Mtx sAffineMatrix;
+
+static void ViewAffineAgain(void)
+{
+    C3D_Mtx matrix = sAffineMatrix;
+
+    ViewAffine(&matrix);
+}
+
 static void DrawObjects(unsigned priority, bool effects)
 {
     static const uint8_t dimensions[3][4][2] = {
@@ -4303,6 +4663,7 @@ static void DrawObjects(unsigned priority, bool effects)
             Mtx_Identity(&matrix);
             matrix.r[0] = FVec4_New(d / det, -b / det, 0, x + CTR_VIEW_X + sLayerShift + boxW / 2.0f - (d * width - b * height) / (2 * det));
             matrix.r[1] = FVec4_New(-c / det, a / det, 0, y + CTR_VIEW_Y + boxH / 2.0f - (a * height - c * width) / (2 * det));
+            sAffineMatrix = matrix;
             ViewAffine(&matrix);
         }
         bool flipX = !affine && (attr1 & 0x1000), flipY = !affine && (attr1 & 0x2000);
@@ -4312,9 +4673,21 @@ static void DrawObjects(unsigned priority, bool effects)
                 unsigned sx = flipX ? width / 8 - 1 - tx : tx;
                 unsigned sy = flipY ? height / 8 - 1 - ty : ty;
                 unsigned tile = CtrVideo_ObjTile(attr2 & 1023, sx, sy, width, color256, Reg(0) & 0x40);
-                DrawTile(0x10000 + tile * 32, ObjBank((unsigned)i, attr2), color256,
-                         (affine ? 0 : x + CTR_VIEW_X + sLayerShift) + (int)tx * 8,
-                         (affine ? 0 : y + CTR_VIEW_Y) + (int)ty * 8, flipX, flipY);
+                float drawX = (affine ? 0 : x + CTR_VIEW_X + sLayerShift) + (int)tx * 8;
+                float drawY = (affine ? 0 : y + CTR_VIEW_Y) + (int)ty * 8;
+
+                /* Upscaled with the battle's art; not into an OBJ window's mask. */
+                if (sHd && sObjWinPass == OBJWIN_NONE)
+                {
+                    int slot = GetTileSlot(0x10000 + tile * 32, ObjBank((unsigned)i, attr2), color256);
+
+                    if (slot < 0 || HdDrawSlot(slot, flipX, flipY, drawX, drawY, affine)) continue;
+                    if (sHdScreenView) ViewBase();
+                    if (affine) ViewAffineAgain();
+                    DrawSlot(slot, drawX, drawY, flipX, flipY);
+                    continue;
+                }
+                DrawTile(0x10000 + tile * 32, ObjBank((unsigned)i, attr2), color256, drawX, drawY, flipX, flipY);
             }
         /* The batch of the sprites after it is drawn with the view as it is
          * then: the bag's item icon came out through the bag's matrix. */
@@ -5965,7 +6338,7 @@ static void RenderEye(C3D_RenderTarget *target, uint32_t clear, float parallax)
      * screen - the surface held only the lowest 128 lines, and a sprite
      * above them (Skarmory rising) was cut off; and the text box went over
      * whatever was in front of it (the level-up stats box). */
-    bool scene = sBattle && sScene && sZoom != 1.0f;
+    bool scene = sBattle && sScene && !sHd;
 
     sParallax = parallax;
     sLayerShift = 0;
@@ -8493,6 +8866,8 @@ void CtrVideo_Present(void)
     sBattle = sBattleRequested && !sStage && !sCentred;
     sTransition = sTransitionRequested && sLineRegs && !sStage && !sCentred && !sBattle;
     sZoom = sBattle ? CTR_BATTLE_ZOOM : 1.0f;
+    sHd = sBattle;
+    CtrBw_SetUpscale(sHd);
     /* GBA (120, 112) - the middle of the scene's bottom edge - on screen (200, 192). */
     sOffX = sBattle ? CTR_GAME_WIDTH / 2 - 120 * sZoom : 0.0f;
     sOffY = sBattle ? CTR_GAME_HEIGHT - 48 - 112 * sZoom : 0.0f;
@@ -8896,6 +9271,10 @@ void CtrVideo_Present(void)
                      (unsigned long)sStats.tiles, (unsigned long)sStats.cells,
                      (unsigned long)sStats.sprites, (unsigned long)sStats.errors, sUsed,
                      (unsigned long)linearSpaceFree(), (unsigned long)vramSpaceFree());
+        if (sHdDrawn)
+            CtrLog_Write(CTR_LOG_VIDEO, "upscaled art: %lu tiles a frame, %lu made", (unsigned long)(sHdDrawn / 600),
+                         (unsigned long)sHdMade);
+        sHdDrawn = sHdMade = 0;
 #if CTR_VOXEL_ENABLED
         if (voxel || sBattleWorld)
         {

@@ -23,6 +23,8 @@
 #include <stdint.h>
 
 #define CTR_BW_PACK_PATH "sdmc:/3ds/emerald3ds/bw_sprites.pack"
+/* The same sprites upscaled 3x, for the battle at 1.5 (optional). */
+#define CTR_BW_HD_PACK_PATH "sdmc:/3ds/emerald3ds/bw_sprites_hd.pack"
 #define CTR_BW_SIDE_FRONT 0
 #define CTR_BW_SIDE_BACK 1
 
@@ -46,7 +48,12 @@ typedef struct
     float u0, v0, u1, v1; /* texture coordinates of the image's corners */
     int left, top;    /* its top-left in the 64x64 box of the OAM entry (unflipped) */
     int width, height;
+    float scale;      /* texels per GBA pixel: 1, or 1.5 upscaled (CtrBw_SetUpscale) */
 } CtrBwSprite;
+
+/* Sprites at 1.5x from the upscaled pack, for the battle drawn at 1.5
+ * (3ds_video.c): set every frame before preparing any. */
+void CtrBw_SetUpscale(bool upscale);
 
 /*
  * The BW sprite for OAM entry `index` (attributes `obj`), with OBJ tiles at
