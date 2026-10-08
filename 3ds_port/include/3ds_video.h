@@ -27,7 +27,9 @@ unsigned CtrVideo_VoxelUploadsLeft(void);
  * 120,112) sits on screen (200,192), on top of the 1:1 text box. At 1.5 the
  * tile grid still lands on whole screen pixels.
  */
-#define CTR_BATTLE_ZOOM 1.4f
+/* 1:1, as the field is: at 1.4 the GBA's pixels came out soft (filtered)
+ * or one and two screen pixels wide (nearest). */
+#define CTR_BATTLE_ZOOM 1.0f
 
 typedef struct
 {
