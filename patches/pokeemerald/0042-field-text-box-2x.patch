@@ -1,0 +1,137 @@
+Pokémon Emerald 3Ds Dual Screen changes to pret/pokeemerald 76463dac15cad36aca5e2b3f6366abf9e53f814f: field text box at 2x
+Applies after 0041-online-play.patch; apply with tools/bootstrap.py.
+
+diff --git a/src/menu.c b/src/menu.c
+--- a/src/menu.c
++++ b/src/menu.c
+@@ -89,6 +89,10 @@
+     [OPTIONS_TEXT_SPEED_FAST] = 1
+ };
+ 
++#if defined(PLATFORM_3DS)
++#define CTR_TEXT_BOX_WIDTH 22
++#endif
++
+ static const struct WindowTemplate sStandardTextBox_WindowTemplates[] =
+ {
+     {
+@@ -101,11 +105,15 @@
+         // docs/ARCHITECTURE.md).
+         .tilemapLeft = 2,
+         .tilemapTop = 24,
++        // 25 tiles with its frame: 200px, drawn at 2x across the 400px top
++        // screen (3ds_video.c, DrawWideBox). Messages are wrapped again to
++        // fit it (CtrWrapMessage).
++        .width = CTR_TEXT_BOX_WIDTH,
+ #else
+         .tilemapLeft = 2,
+         .tilemapTop = 15,
+-#endif
+         .width = 27,
++#endif
+         .height = 4,
+         .paletteNum = 15,
+         .baseBlock = 0x194
+@@ -191,10 +199,102 @@
+     return IsTextPrinterActive(0);
+ }
+ 
++#if defined(PLATFORM_3DS)
++// The field's text box is narrower on the 3DS (sStandardTextBox_WindowTemplates),
++// so a message for it is wrapped again to its width. Within a page its own
++// line breaks become spaces; \p still starts a new page. The first break of a
++// page is a new line and the rest scroll (\l), as the game's own text does.
++static u8 sCtrWrapped[1024];
++
++static bool8 CtrIsFieldTextBox(u8 windowId)
++{
++    const struct WindowTemplate *window = &gWindows[windowId].window;
++
++    return windowId == 0 && window->bg == 0 && window->tilemapTop == 24 && window->height == 4
++        && window->width == CTR_TEXT_BOX_WIDTH;
++}
++
++static bool8 CtrIsBreak(u8 c)
++{
++    return c == CHAR_SPACE || c == CHAR_NEWLINE || c == CHAR_PROMPT_SCROLL || c == CHAR_PROMPT_CLEAR || c == EOS;
++}
++
++static const u8 *CtrWrapMessage(u8 fontId, const u8 *str)
++{
++    // Room for the down arrow at the end of a line.
++    const s32 maxWidth = CTR_TEXT_BOX_WIDTH * 8 - 8;
++    const u8 space[] = {CHAR_SPACE, EOS};
++    s32 spaceWidth = GetStringWidth(fontId, space, 0), lineWidth = 0;
++    u32 out = 0, breaks = 0;
++    bool8 gap = FALSE;
++    u8 word[256];
++
++    while (*str != EOS && out < sizeof(sCtrWrapped) - 8)
++    {
++        u32 length = 0;
++        s32 width;
++
++        if (*str == CHAR_PROMPT_CLEAR)
++        {
++            sCtrWrapped[out++] = *str++;
++            lineWidth = 0;
++            breaks = 0;
++            gap = FALSE;
++            continue;
++        }
++        if (CtrIsBreak(*str))
++        {
++            gap = lineWidth > 0;
++            str++;
++            continue;
++        }
++        // A word, with any control codes in it.
++        while (!CtrIsBreak(*str) && length < sizeof(word) - 8)
++        {
++            if (*str == EXT_CTRL_CODE_BEGIN)
++            {
++                u32 n = 1 + GetExtCtrlCodeLength(str[1]);
++
++                while (n-- && *str != EOS)
++                    word[length++] = *str++;
++            }
++            else
++            {
++                word[length++] = *str++;
++            }
++        }
++        word[length] = EOS;
++        width = GetStringWidth(fontId, word, 0);
++        if (lineWidth > 0 && lineWidth + (gap ? spaceWidth : 0) + width > maxWidth)
++        {
++            sCtrWrapped[out++] = breaks++ == 0 ? CHAR_NEWLINE : CHAR_PROMPT_SCROLL;
++            lineWidth = 0;
++        }
++        else if (gap)
++        {
++            sCtrWrapped[out++] = CHAR_SPACE;
++            lineWidth += spaceWidth;
++        }
++        gap = FALSE;
++        if (out + length >= sizeof(sCtrWrapped) - 1)
++            break;
++        memcpy(sCtrWrapped + out, word, length);
++        out += length;
++        lineWidth += width;
++    }
++    sCtrWrapped[out] = EOS;
++    return sCtrWrapped;
++}
++#endif
++
+ u16 AddTextPrinterParameterized2(u8 windowId, u8 fontId, const u8 *str, u8 speed, void (*callback)(struct TextPrinterTemplate *, u16), u8 fgColor, u8 bgColor, u8 shadowColor)
+ {
+     struct TextPrinterTemplate printer;
+ 
++#if defined(PLATFORM_3DS)
++    if (CtrIsFieldTextBox(windowId))
++        str = CtrWrapMessage(fontId, str);
++#endif
+     printer.currentChar = str;
+     printer.windowId = windowId;
+     printer.fontId = fontId;

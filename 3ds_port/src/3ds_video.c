@@ -3821,10 +3821,12 @@ static void DrawBwBg(unsigned bg, const CtrBwSprite *bw)
 
 /*
  * A framed box across the field's text layer - the message box, a sign, a
- * PokeNav call - spans the GBA's 240px; on the field the layer is drawn moved
- * to the middle of the 400px screen (CTR_FIELD_UI_SHIFT). The box is stretched
- * to the screen's edges instead: its caps go to the edges and its middle is
- * repeated between them, the text staying where it is.
+ * PokeNav call. On the field the layer is drawn moved to the middle of the
+ * 400px screen (CTR_FIELD_UI_SHIFT). The message box is 200px wide here
+ * (menu.c, sStandardTextBox_WindowTemplates) and drawn at 2x, across the
+ * whole screen; a wider box, as the GBA's 240px, is stretched to the screen's
+ * edges instead: its caps go to the edges and its middle is repeated between
+ * them, the text staying where it is.
  */
 typedef struct
 {
@@ -3853,7 +3855,7 @@ static bool FindWideBox(unsigned bg, WideBox *box)
                     if (left == 32) left = c;
                     right = c;
                 }
-            solid = left <= 2 && right >= 27 && right - left >= 25;
+            solid = left <= 2 && right - left >= 20;
             for (unsigned c = left; solid && c <= right; c++)
                 solid = (MapEntry(map, size, c, row) & 1023) != 0;
         }
@@ -3889,36 +3891,49 @@ static void DrawWideBoxTile(unsigned chars, bool color256, unsigned entry, int x
 }
 
 /*
- * The box at WIDE_BOX_SCALE, text and all, its bottom where it was and its
- * middle on the screen's: its caps on the screen's edges, its middle
- * repeated between them and what lies between the caps where the game put
- * it. At 1.5 every 8 pixels of the box are 12 of the screen, so its tiles
- * meet without seams.
+ * The box at its scale (WideBoxScale), text and all, its bottom edge where it
+ * was: its caps on the screen's edges, its middle repeated between them and
+ * what lies between the caps where the game put it - at 2x the box is the
+ * screen's width, centred on it, every pixel a 2x2 block.
  */
-#define WIDE_BOX_SCALE 1.5f
-
-/* How much higher the box's top is, scaled (WideBoxLift). */
-static int WideBoxLift(const WideBox *box)
+static int WideBoxScale(const WideBox *box)
 {
-    return (int)((box->row1 + 1 - box->row0) * 8 * (WIDE_BOX_SCALE - 1.0f));
+    return (int)(box->right + 1 - box->left) * 8 * 2 <= sClipX1 - sClipX0 ? 2 : 1;
+}
+
+/* How far down the box goes, at 2x: onto the screen's bottom edge. */
+static int WideBoxDrop(unsigned bg, const WideBox *box)
+{
+    int bottom = (int)(box->row1 + 1) * 8 - (int)(Reg(0x12 + bg * 4) & 511);
+
+    return WideBoxScale(box) == 2 && sClipY1 > bottom ? sClipY1 - bottom : 0;
+}
+
+/* How much higher the box's top is, scaled. */
+static int WideBoxLift(unsigned bg, const WideBox *box)
+{
+    return (int)(box->row1 + 1 - box->row0) * 8 * (WideBoxScale(box) - 1) - WideBoxDrop(bg, box);
 }
 
 static void DrawWideBox(unsigned bg, const WideBox *box)
 {
-    const float scale = WIDE_BOX_SCALE;
+    const float scale = (float)WideBoxScale(box);
     unsigned control = Reg(8 + bg * 2), size = control >> 14;
     unsigned map = ((control >> 8) & 31) * 0x800;
     unsigned chars = ((control >> 2) & 3) * 0x4000;
     bool color256 = (control & 128) != 0;
     int scrollX = (int)(Reg(0x10 + bg * 4) & 511), scrollY = (int)(Reg(0x12 + bg * 4) & 511);
     int y1 = (int)(box->row1 + 1) * 8 - scrollY;
-    /* Screen = translate + scale * layer: the GBA picture's middle (x 120)
-     * stays put, and so does the box's bottom edge. */
-    float tx = 120 + CTR_VIEW_X + sLayerShift - 120 * scale;
-    float ty = y1 + CTR_VIEW_Y - y1 * scale;
+    /* Screen = translate + scale * layer: the box's bottom edge stays put;
+     * at 1x the layer does, at 2x the box is centred on the screen. */
+    float centre = (float)((int)(box->left + box->right + 1) * 4 - scrollX);
+    float tx = scale == 1.0f ? CTR_VIEW_X + sLayerShift
+                             : (sClipX0 + sClipX1) / 2.0f + CTR_VIEW_X - centre * scale;
+    float ty = y1 + WideBoxDrop(bg, box) + CTR_VIEW_Y - y1 * scale;
     float u0 = (sClipX0 + CTR_VIEW_X - tx) / scale, u1 = (sClipX1 + CTR_VIEW_X - tx) / scale;
-    int top = y1 - (int)(box->row1 + 1 - box->row0) * 8 - WideBoxLift(box);
-    int clipTop = top > sClipY0 ? top : sClipY0, clipBottom = y1 < sClipY1 ? y1 : sClipY1;
+    int top = y1 - (int)(box->row1 + 1 - box->row0) * 8 - WideBoxLift(bg, box);
+    int bottom = y1 + WideBoxDrop(bg, box);
+    int clipTop = top > sClipY0 ? top : sClipY0, clipBottom = bottom < sClipY1 ? bottom : sClipY1;
     float cap = (float)box->cap * 8;
 
     if (clipTop >= clipBottom) return;
@@ -4437,7 +4452,7 @@ static void Layers(unsigned mask)
                 if (top > clipTop)
                 {
                     sClipY1 = top < clipBottom ? top : clipBottom;
-                    if (!DrawAboveWideBox(bg, &wideBox, WideBoxLift(&wideBox), clipTop)
+                    if (!DrawAboveWideBox(bg, &wideBox, WideBoxLift(bg, &wideBox), clipTop)
                         && !DrawLineBg(bg) && !DrawFieldBgTex(bg) && !DrawStageBgTex(bg) && !DrawBandBgTex(bg))
                         DrawTextBg(bg);
                     sClipY1 = clipBottom;
