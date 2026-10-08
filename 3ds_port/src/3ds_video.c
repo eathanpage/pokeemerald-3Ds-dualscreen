@@ -5345,7 +5345,15 @@ static void ScenePlaceFrom(C3D_RenderTarget *target, float shift, C3D_Tex *tex, 
     int width = sScenePut.width, height = sScenePut.height;
     float u0 = column / (float)tex->width, u1 = (column + width) / (float)tex->width;
     const Tex3DS_SubTexture cut = {(u16)width, (u16)height, u0, 1, u1, 1 - height / (float)tex->height};
+    /*
+     * ENHANCEMENTS' BATTLE PIXELS: SHARP takes each screen pixel from the
+     * nearest texel instead - no soft edges, the GBA's pixels one or two
+     * screen pixels wide (the shimmer above, as things move); SMOOTH is the
+     * bilinear draw.
+     */
+    GPU_TEXTURE_FILTER_PARAM filter = CtrSettings_GetInt("battle_pixels", 1) ? GPU_NEAREST : GPU_LINEAR;
 
+    C3D_TexSetFilter(tex, filter, filter);
     SceneOn(target);
     C2D_ViewReset();
     Blend(5, false, false);
