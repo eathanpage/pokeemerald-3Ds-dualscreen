@@ -1,0 +1,66 @@
+diff --git a/3ds_port/src/3ds_bottom_ui.c b/3ds_port/src/3ds_bottom_ui.c
+index 0d176b7..f985f53 100644
+--- a/3ds_port/src/3ds_bottom_ui.c
++++ b/3ds_port/src/3ds_bottom_ui.c
+@@ -466,6 +466,8 @@ static struct
+     Icon column[SCR_COUNT];
+     u8 *typeTiles;
+     Pal typePal[3];
++    const u8 *categoryTiles;
++    Pal categoryPal;
+     u8 *statusTiles;
+     Pal statusPal;
+     Pal monIconPal[3];
+@@ -491,6 +493,12 @@ static struct
+     Pal bagPal;
+ } sRes;
+ 
++/* Only in a build with the physical/special split (its summary screen's icons). */
++extern const u8 gMoveCategories[] __attribute__((weak));
++extern const u8 *const gCtrCategoryIconsGfx __attribute__((weak));
++extern const u16 *const gCtrCategoryIconsPal __attribute__((weak));
++extern const u32 gCtrCategoryIconsSize __attribute__((weak));
++
+ static void LoadItemIcon(Icon *icon, const void *tiles, const void *pal)
+ {
+     u16 *raw = Unlz(pal, NULL);
+@@ -592,6 +600,12 @@ static void LoadResources(void)
+ 
+     sRes.typeTiles = UnlzFile("types/move_types.4bpp.lz", NULL);
+     PalFile("types/move_types.gbapal.lz", sRes.typePal, 3, TRUE);
++    /* A build with the physical/special split has the category icons. */
++    if (&gCtrCategoryIconsGfx && &gMoveCategories)
++    {
++        sRes.categoryTiles = Port_ResolveAssetPointerSized(gCtrCategoryIconsGfx, gCtrCategoryIconsSize);
++        PalSymbol(gCtrCategoryIconsPal, &sRes.categoryPal, 1);
++    }
+     sRes.statusTiles = UnlzFile("interface/status_icons.4bpp.lz", NULL);
+     PalFile("interface/status_icons.gbapal.lz", &sRes.statusPal, 1, TRUE);
+     for (int i = 0; i < 3; ++i)
+@@ -4339,6 +4353,13 @@ static Rgb Shade(Rgb c, int keep)
+ #define PLATE_DARK(c) Shade(c, 38)
+ #define PLATE_SHADOW(c) Shade(c, 27)
+ 
++/* A move's category (physical, special, status), 32x16, if the build has them. */
++static void DrawCategoryIcon(u16 move, int x, int y)
++{
++    if (sRes.categoryTiles && move < MOVES_COUNT && gMoveCategories[move] < 3)
++        DrawSprite(sRes.categoryTiles + gMoveCategories[move] * 8 * 32, 4, 2, x, y, sRes.categoryPal.c);
++}
++
+ static void DrawTypeIcon(u8 type, int x, int y)
+ {
+     if (sRes.typeTiles && type < NUMBER_OF_MON_TYPES)
+@@ -4933,6 +4954,7 @@ static void MoveBody(const ViewState *s, int i)
+         return;
+     DrawSmoothStr(&sNormal, gMoveNames[move], x + 10, oy + 5, 4, sWhite, dark, &shadow);
+     DrawTypeIcon(data->type, x + 11, oy + 33);
++    DrawCategoryIcon(move, x + 46, oy + 33);
+     StringCopy(text, gText_MoveInterfacePP);
+     StringAppend(text, Number(s->moves4.currentPp[i], 2, STR_CONV_MODE_RIGHT_ALIGN));
+     StringAppend(text, gText_Slash);
+# Plus, in build/upstream/src/pokemon_summary_screen.c after sCategoryIcons_Pal
+# (the tree with 0042 applied):
+#   const u8 *const gCtrCategoryIconsGfx = sCategoryIcons_Gfx;
+#   const u16 *const gCtrCategoryIconsPal = sCategoryIcons_Pal;
+#   const u32 gCtrCategoryIconsSize = sizeof(sCategoryIcons_Gfx);

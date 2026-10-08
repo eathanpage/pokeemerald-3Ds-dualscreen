@@ -1,0 +1,12 @@
+diff --git a/3ds_port/src/3ds_extras.c b/3ds_port/src/3ds_extras.c
+index df66e3e..9ff4fac 100644
+--- a/3ds_port/src/3ds_extras.c
++++ b/3ds_port/src/3ds_extras.c
+@@ -184,6 +184,7 @@ const CtrExtra gCtrExtras[] =
+     {CTR_EXTRAS_ENHANCEMENTS, "TRADE EVO LV. 40", "trade_evo", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
+     {CTR_EXTRAS_ENHANCEMENTS, "HMS WITHOUT MOVE", "field_hms", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
+     {CTR_EXTRAS_ENHANCEMENTS, "VISIBLE WILD", "visible_wild", 4, 0, sVisibleWild, NULL, NULL, NULL},
++    {CTR_EXTRAS_ENHANCEMENTS, "FOLLOWING POKEMON", "following_pokemon", 2, 1, gCtrExtrasOffOn, NULL, NULL, NULL},
+     {CTR_EXTRAS_CHEATS, "WILD ENCOUNTERS", "encounter_rate", 5, 0, sEncounterRate, NULL, NULL, NULL},
+     {CTR_EXTRAS_CHEATS, "SHINY ODDS", "shiny_odds", 6, 0, sShinyOdds, NULL, NULL, NULL},
+     {CTR_EXTRAS_CHEATS, "ALWAYS CATCH", "always_catch", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},

@@ -1,0 +1,3599 @@
+--- a/data/event_scripts.s
++++ b/data/event_scripts.s
+@@ -1055,6 +1055,7 @@
+ 	.include "data/scripts/move_tutors.inc"
+ 	.include "data/scripts/trainer_hill.inc"
+ 	.include "data/scripts/test_signpost.inc"
++	.include "data/scripts/follower.inc"
+ 	.include "data/text/frontier_brain.inc"
+ 	.include "data/text/save.inc"
+ 	.include "data/text/birch_speech.inc"
+--- a/data/specials.inc
++++ b/data/specials.inc
+@@ -536,6 +536,8 @@
+ 	def_special RemoveRecordsWindow
+ 	def_special CloseDeptStoreElevatorWindow
+ 	def_special TrySetBattleTowerLinkType
++	def_special FollowerInteract
++	def_special FollowerAnswer
+ 	def_special OnlineRoom_IsEnabled
+ 	def_special OnlineRoom_BufferCode
+ 	def_special OnlineRoom_EnterCode
+--- a/include/event_object_movement.h
++++ b/include/event_object_movement.h
+@@ -446,4 +446,11 @@
+ void SetVirtualObjectSpriteAnim(u8 virtualObjId, u8 animNum);
+ bool32 IsVirtualObjectAnimating(u8 virtualObjId);
+ 
++#ifdef PLATFORM_3DS
++void InitFollowerGraphicsInfo(struct ObjectEventGraphicsInfo *info, u8 size, const union AnimCmd *const *anims,
++                              const struct SpriteFrameImage *images);
++void RemoveObjectEventById(u8 objectEventId);
++void SetFollowerCollisionsIgnored(bool8 ignored);
++#endif
++
+ #endif //GUARD_EVENT_OBJECT_MOVEMENT_H
+--- a/include/event_scripts.h
++++ b/include/event_scripts.h
+@@ -612,4 +612,8 @@
+ extern const u8 EventScript_ConfirmLeaveCableClubRoom[];
+ extern const u8 EventScript_TerminateLink[];
+ 
++#ifdef PLATFORM_3DS
++extern const u8 EventScript_Follower[];
++#endif
++
+ #endif // GUARD_EVENT_SCRIPTS_H
+--- a/include/overworld.h
++++ b/include/overworld.h
+@@ -118,6 +118,9 @@
+ u8 GetMapTypeByWarpData(struct WarpData *warp);
+ u8 GetCurrentMapType(void);
+ u8 GetLastUsedWarpMapType(void);
++#ifdef PLATFORM_3DS
++u8 GetWarpDestinationMapType(void);
++#endif
+ bool8 IsMapTypeOutdoors(u8 mapType);
+ bool8 Overworld_MapTypeAllowsTeleportAndFly(u8 mapType);
+ bool8 IsMapTypeIndoors(u8 mapType);
+--- a/src/event_object_movement.c
++++ b/src/event_object_movement.c
+@@ -12,6 +12,7 @@
+ #include "field_effect_helpers.h"
+ #include "field_player_avatar.h"
+ #include "fieldmap.h"
++#include "follower.h"
+ #include "mauville_old_man.h"
+ #include "metatile_behavior.h"
+ #include "overworld.h"
+@@ -182,6 +183,10 @@
+ 
+ static const struct SpriteFrameImage sPicTable_PechaBerryTree[];
+ 
++#ifdef PLATFORM_3DS
++static u8 sPlayerStepKind; // how the player's current step started (for the follower)
++#endif
++
+ const u8 gReflectionEffectPaletteMap[16] = {
+         [PALSLOT_PLAYER]                 = PALSLOT_PLAYER_REFLECTION,
+         [PALSLOT_PLAYER_REFLECTION]      = PALSLOT_PLAYER_REFLECTION,
+@@ -1372,6 +1377,11 @@
+         if (gObjectEvents[i].localId == localId && gObjectEvents[i].mapNum == mapNum && gObjectEvents[i].mapGroup == mapGroup)
+             return TRUE;
+     }
++#ifdef PLATFORM_3DS
++    // The following Pokemon gives its slot up to any other object.
++    if (i >= OBJECT_EVENTS_COUNT && Follower_YieldObjectSlot())
++        return GetAvailableObjectEventId(localId, mapNum, mapGroup, objectEventId);
++#endif
+     if (i >= OBJECT_EVENTS_COUNT)
+         return TRUE;
+     *objectEventId = i;
+@@ -1929,12 +1939,49 @@
+         return gMauvilleOldManGraphicsInfoPointers[bard];
+     }
+ 
++#ifdef PLATFORM_3DS
++    if (graphicsId == OBJ_EVENT_GFX_FOLLOWER && Follower_GetGraphicsInfo())
++        return Follower_GetGraphicsInfo();
++#endif
++
+     if (graphicsId >= NUM_OBJ_EVENT_GFX)
+         graphicsId = OBJ_EVENT_GFX_NINJA_BOY;
+ 
+     return gObjectEventGraphicsInfoPointers[graphicsId];
+ }
+ 
++#ifdef PLATFORM_3DS
++// Graphics info for the following Pokemon's sprite (follower.c): like the
++// other Pokemon objects, with its colours from an extra palette.
++void InitFollowerGraphicsInfo(struct ObjectEventGraphicsInfo *info, u8 size, const union AnimCmd *const *anims,
++                              const struct SpriteFrameImage *images)
++{
++    memset(info, 0, sizeof(*info));
++    info->tileTag = TAG_NONE;
++    info->paletteTag = OBJ_EVENT_PAL_TAG_NPC_1;
++    info->reflectionPaletteTag = OBJ_EVENT_PAL_TAG_NPC_1_REFLECTION;
++    info->size = size * size / 2;
++    info->width = size;
++    info->height = size;
++    info->paletteSlot = PALSLOT_NPC_1;
++    info->shadowSize = size == 64 ? SHADOW_SIZE_L : SHADOW_SIZE_M;
++    info->inanimate = FALSE;
++    info->disableReflectionPaletteLoad = FALSE;
++    info->tracks = TRACKS_FOOT;
++    info->oam = size == 64 ? &gObjectEventBaseOam_64x64 : &gObjectEventBaseOam_32x32;
++    info->subspriteTables = size == 64 ? sOamTables_64x64 : sOamTables_32x32;
++    info->anims = anims;
++    info->images = images;
++    info->affineAnims = gDummySpriteAffineAnimTable;
++}
++
++void RemoveObjectEventById(u8 objectEventId)
++{
++    if (objectEventId < OBJECT_EVENTS_COUNT && gObjectEvents[objectEventId].active)
++        RemoveObjectEvent(&gObjectEvents[objectEventId]);
++}
++#endif
++
+ static void SetObjectEventDynamicGraphicsId(struct ObjectEvent *objectEvent)
+ {
+     if (objectEvent->graphicsId >= OBJ_EVENT_GFX_VARS)
+@@ -2121,6 +2168,9 @@
+ 
+ void ShiftObjectEventCoords(struct ObjectEvent *objectEvent, s16 x, s16 y)
+ {
++#ifdef PLATFORM_3DS
++    Follower_OnObjectStep(objectEvent, x, y);
++#endif
+     objectEvent->previousCoords.x = objectEvent->currentCoords.x;
+     objectEvent->previousCoords.y = objectEvent->currentCoords.y;
+     objectEvent->currentCoords.x = x;
+@@ -2191,6 +2241,9 @@
+                 gObjectEvents[i].previousCoords.y -= dy;
+             }
+         }
++#ifdef PLATFORM_3DS
++        Follower_ShiftCoords(dx, dy);
++#endif
+     }
+ }
+ 
+@@ -2382,6 +2435,10 @@
+ 
+ const u8 *GetObjectEventScriptPointerByObjectEventId(u8 objectEventId)
+ {
++#ifdef PLATFORM_3DS
++    if (Follower_IsFollower(&gObjectEvents[objectEventId]))
++        return Follower_GetScript();
++#endif
+     return GetObjectEventScriptPointerByLocalIdAndMap(gObjectEvents[objectEventId].localId, gObjectEvents[objectEventId].mapNum, gObjectEvents[objectEventId].mapGroup);
+ }
+ 
+@@ -4726,6 +4783,15 @@
+     return FALSE;
+ }
+ 
++#ifdef PLATFORM_3DS
++static bool8 sIgnoreFollowerCollisions;
++
++void SetFollowerCollisionsIgnored(bool8 ignored)
++{
++    sIgnoreFollowerCollisions = ignored;
++}
++#endif
++
+ static bool8 DoesObjectCollideWithObjectAt(struct ObjectEvent *objectEvent, s16 x, s16 y)
+ {
+     u8 i;
+@@ -4734,6 +4800,12 @@
+     for (i = 0; i < OBJECT_EVENTS_COUNT; i++)
+     {
+         curObject = &gObjectEvents[i];
++#ifdef PLATFORM_3DS
++        // The player walks through the following Pokemon (they swap places),
++        // and trainers see past it.
++        if ((objectEvent->isPlayer || sIgnoreFollowerCollisions) && Follower_IsFollower(curObject))
++            continue;
++#endif
+         if (curObject->active && curObject != objectEvent)
+         {
+             if ((curObject->currentCoords.x == x && curObject->currentCoords.y == y) || (curObject->previousCoords.x == x && curObject->previousCoords.y == y))
+@@ -4933,6 +5005,10 @@
+ 
+ void UpdateObjectEventCurrentMovement(struct ObjectEvent *objectEvent, struct Sprite *sprite, bool8 (*callback)(struct ObjectEvent *, struct Sprite *))
+ {
++#ifdef PLATFORM_3DS
++    s16 fromX = objectEvent->currentCoords.x, fromY = objectEvent->currentCoords.y;
++    bool8 starting = sprite->sActionFuncId == 0; // first step of a movement, not a jump's second tile
++#endif
+     DoGroundEffects_OnSpawn(objectEvent, sprite);
+     TryEnableObjectEventAnim(objectEvent, sprite);
+ 
+@@ -4940,6 +5016,12 @@
+         ObjectEventExecHeldMovementAction(objectEvent, sprite);
+     else if (!objectEvent->frozen)
+         while (callback(objectEvent, sprite));
++#ifdef PLATFORM_3DS
++    // The following Pokemon walks where the player was.
++    if (objectEvent->isPlayer && starting
++     && (objectEvent->currentCoords.x != fromX || objectEvent->currentCoords.y != fromY))
++        Follower_OnPlayerStep(fromX, fromY, sPlayerStepKind);
++#endif
+ 
+     DoGroundEffects_OnBeginStep(objectEvent, sprite);
+     DoGroundEffects_OnFinishStep(objectEvent, sprite);
+@@ -5095,6 +5177,10 @@
+     s16 x;
+     s16 y;
+ 
++#ifdef PLATFORM_3DS
++    if (objectEvent->isPlayer)
++        sPlayerStepKind = speed;
++#endif
+     x = objectEvent->currentCoords.x;
+     y = objectEvent->currentCoords.y;
+     SetObjectEventDirection(objectEvent, direction);
+@@ -5142,6 +5228,10 @@
+     s16 x;
+     s16 y;
+ 
++#ifdef PLATFORM_3DS
++    if (objectEvent->isPlayer)
++        sPlayerStepKind = FOLLOWER_STEP_SLOW;
++#endif
+     x = objectEvent->currentCoords.x;
+     y = objectEvent->currentCoords.y;
+     SetObjectEventDirection(objectEvent, direction);
+@@ -5445,6 +5535,10 @@
+     memcpy(displacements, sJumpInitDisplacements, sizeof sJumpInitDisplacements);
+     x = 0;
+     y = 0;
++#ifdef PLATFORM_3DS
++    if (objectEvent->isPlayer)
++        sPlayerStepKind = distance == JUMP_DISTANCE_FAR ? FOLLOWER_STEP_JUMP2 : FOLLOWER_STEP_JUMP;
++#endif
+     SetObjectEventDirection(objectEvent, direction);
+     MoveCoordsInDirection(direction, &x, &y, displacements[distance], displacements[distance]);
+     ShiftObjectEventCoords(objectEvent, objectEvent->currentCoords.x + x, objectEvent->currentCoords.y + y);
+--- a/src/field_control_avatar.c
++++ b/src/field_control_avatar.c
+@@ -14,6 +14,7 @@
+ #include "field_screen_effect.h"
+ #include "field_specials.h"
+ #include "fldeff_misc.h"
++#include "follower.h"
+ #include "item_menu.h"
+ #include "link.h"
+ #include "match_call.h"
+@@ -545,6 +546,9 @@
+     }
+ 
+     IncrementRematchStepCounter();
++#ifdef PLATFORM_3DS
++    Follower_OnPlayerStepTaken();
++#endif
+     UpdateFriendshipStepCounter();
+     UpdateFarawayIslandStepCounter();
+ 
+--- a/src/field_screen_effect.c
++++ b/src/field_screen_effect.c
+@@ -11,6 +11,7 @@
+ #include "field_screen_effect.h"
+ #include "field_special_scene.h"
+ #include "field_weather.h"
++#include "follower.h"
+ #include "gpu_regs.h"
+ #include "io_reg.h"
+ #include "link.h"
+@@ -483,6 +484,9 @@
+ 
+ void DoWarp(void)
+ {
++#ifdef PLATFORM_3DS
++    Follower_OnWarpStart(); // into its Ball when going into a building
++#endif
+     LockPlayerFieldControls();
+     TryFadeOutOldMapMusic();
+     WarpFadeOutScreen();
+@@ -514,6 +518,9 @@
+ 
+ void DoDoorWarp(void)
+ {
++#ifdef PLATFORM_3DS
++    Follower_OnWarpStart(); // into its Ball as the door opens
++#endif
+     LockPlayerFieldControls();
+     gFieldCallback = FieldCB_DefaultWarpExit;
+     CreateTask(Task_DoDoorWarp, 10);
+--- a/src/load_save.c
++++ b/src/load_save.c
+@@ -1,6 +1,7 @@
+ #include "global.h"
+ #include "malloc.h"
+ #include "berry_powder.h"
++#include "follower.h"
+ #include "item.h"
+ #include "load_save.h"
+ #include "main.h"
+@@ -207,7 +208,14 @@
+     int i;
+ 
+     for (i = 0; i < OBJECT_EVENTS_COUNT; i++)
++    {
+         gSaveBlock1Ptr->objectEvents[i] = gObjectEvents[i];
++#ifdef PLATFORM_3DS
++        // The following Pokemon isn't saved; it's set up again after loading.
++        if (Follower_IsFollower(&gObjectEvents[i]))
++            memset(&gSaveBlock1Ptr->objectEvents[i], 0, sizeof(gSaveBlock1Ptr->objectEvents[i]));
++#endif
++    }
+ }
+ 
+ void LoadObjectEvents(void)
+--- a/src/overworld.c
++++ b/src/overworld.c
+@@ -23,6 +23,7 @@
+ #include "field_tasks.h"
+ #include "field_weather.h"
+ #include "fieldmap.h"
++#include "follower.h"
+ #include "fldeff.h"
+ #include "gpu_regs.h"
+ #include "heal_location.h"
+@@ -1475,6 +1476,13 @@
+     return GetMapTypeByWarpData(&gLastUsedWarp);
+ }
+ 
++#ifdef PLATFORM_3DS
++u8 GetWarpDestinationMapType(void)
++{
++    return GetMapTypeByWarpData(&sWarpDestination);
++}
++#endif
++
+ bool8 IsMapTypeOutdoors(u8 mapType)
+ {
+     if (mapType == MAP_TYPE_ROUTE
+@@ -1603,6 +1611,9 @@
+ {
+     ScriptContext_RunScript();
+     RunTasks();
++#ifdef PLATFORM_3DS
++    Follower_Update();
++#endif
+     AnimateSprites();
+     CameraUpdate();
+     UpdateCameraPanning();
+--- a/src/pokemon.c
++++ b/src/pokemon.c
+@@ -11,6 +11,7 @@
+ #include "battle_pike.h"
+ #include "battle_pyramid.h"
+ #include "battle_setup.h"
++#include "follower.h"
+ #include "battle_tower.h"
+ #include "data.h"
+ #include "event_data.h"
+@@ -4804,7 +4805,14 @@
+ 
+ bool8 ExecuteTableBasedItemEffect(struct Pokemon *mon, u16 item, u8 partyIndex, u8 moveIndex)
+ {
++#ifdef PLATFORM_3DS
++    bool8 noEffect = PokemonUseItemEffects(mon, item, partyIndex, moveIndex, FALSE);
++    if (!noEffect)
++        Follower_OnItemUsed(mon, item);
++    return noEffect;
++#else
+     return PokemonUseItemEffects(mon, item, partyIndex, moveIndex, FALSE);
++#endif
+ }
+ 
+ #define UPDATE_FRIENDSHIP_FROM_ITEM()                                                                   \
+@@ -6022,6 +6030,10 @@
+     if (ShouldSkipFriendshipChange())
+         return;
+ 
++#ifdef PLATFORM_3DS
++    Follower_OnFriendshipEvent(mon, event); // HGSS's mood changes alongside friendship
++#endif
++
+     species = GetMonData(mon, MON_DATA_SPECIES_OR_EGG, 0);
+     heldItem = GetMonData(mon, MON_DATA_HELD_ITEM, 0);
+ 
+--- a/src/sprite.c
++++ b/src/sprite.c
+@@ -5,6 +5,7 @@
+ #if defined(PLATFORM_3DS)
+ #include "3ds_video.h"
+ bool8 FieldEffect_IsMachineSprite(const struct Sprite *sprite);   /* field_effect.c */
++u8 PlatformGetExtObjPalette(const void *images);                  /* follower.c */
+ #endif
+ #if defined(PLATFORM_3DS)
+ #include "field_weather.h"
+@@ -608,6 +609,8 @@
+                 if (FieldEffect_IsMachineSprite(sprite))
+                     CtrVideo_MarkMachineOam(first, oamIndex);
+             }
++            // Its own colours, not an OBJ palette's: the following Pokemon.
++            CtrVideo_MarkExtPaletteOam(first, oamIndex, PlatformGetExtObjPalette(sprite->images));
+             if (IsFogSprite(sprite))
+                 CtrVideo_MarkFogOam(first, oamIndex);
+ #endif
+--- a/src/follower.c
++++ b/src/follower.c
+@@ -0,0 +1,2352 @@
++// The lead Pokemon walks behind the player, as in HeartGold/SoulSilver
++// (PC port only; [Gameplay] FollowingPokemon in the ini turns it off).
++//
++// What could be taken from the HGSS decompilation (pret/pokeheartgold) is
++// ported as it is there:
++//  - The follower is the first Pokemon that can still battle, or the first
++//    that isn't an Egg if none can (FollowMon_InitMapObject).
++//  - It goes back into its Ball while the player rides a Bike or surfs, and
++//    the tallest Pokemon stay out of buildings (MAP_FOLLOWMODE_HEIGHT_RESTRICT,
++//    tp_param.csv's too_tall).
++//  - Its mood: -127..127, reset whenever a different Pokemon starts following,
++//    moved one step towards 0 for every step taken while it's out, and
++//    changed by battles and items (pokemon_mood.c, FieldSystem_UnkSub108_*).
++//    HGSS keeps it in the Pokemon's data; here it's kept in RAM so saves stay
++//    the same as the original game's.
++//  - Its lines when talked to (msg_0265.gmm, see data/follower_messages.h).
++// HGSS picks those lines in native code that isn't decompiled yet, so which
++// line comes up, the emote bubbles, the little animations and the items it
++// finds are a recreation, as is the way it follows (map objects work
++// differently on the DS).
++//
++// The follower is an ordinary object event with a reserved local id and
++// graphics id; it isn't saved (SaveObjectEvents leaves it out) and is set up
++// again after loading. Its graphics are built at run time from the sprite
++// pack (port/follower_pack.c): HGSS-style overworld sprites from
++// pokeemerald-expansion, with their own palette drawn through one of the
++// port's extra sprite palettes.
++
++#include "global.h"
++
++#ifdef PLATFORM_3DS
++
++#include "follower.h"
++#include "battle_anim.h"
++#include "battle_main.h"
++#include "battle_pyramid.h"
++#include "decompress.h"
++#include "event_data.h"
++#include "event_object_movement.h"
++#include "event_scripts.h"
++#include "field_player_avatar.h"
++#include "field_weather.h"
++#include "fieldmap.h"
++#include "item.h"
++#include "link.h"
++#include "metatile_behavior.h"
++#include "overworld.h"
++#include "palette.h"
++#include "platform.h"
++#include "pokeball.h"
++#include "pokemon.h"
++#include "random.h"
++#include "rtc.h"
++#include "safari_zone.h"
++#include "script.h"
++#include "script_movement.h"
++#include "sound.h"
++#include "sprite.h"
++#include "string_util.h"
++#include "task.h"
++#include "trainer_hill.h"
++#include "constants/battle.h"
++#include "constants/battle_pyramid.h"
++#include "constants/characters.h"
++#include "constants/event_object_movement.h"
++#include "constants/event_objects.h"
++#include "constants/items.h"
++#include "constants/map_types.h"
++#include "constants/metatile_behaviors.h"
++#include "constants/region_map_sections.h"
++#include "constants/songs.h"
++#include "constants/species.h"
++#include "constants/weather.h"
++
++struct FollowerMessage
++{
++    const u8 *text;
++    u8 emote;
++    u8 motion;
++};
++
++#include "data/follower_text.h"
++#include "data/follower_messages.h"
++
++extern const u8 gTypeEffectiveness[336];
++#ifdef PLATFORM_3DS
++// The 3DS reads the pack from the SD card the first time it's wanted
++// (sdmc:/3ds/emerald3ds/followers.pack); without it there's no follower.
++// The switch is ENHANCEMENTS' FOLLOWING POKEMON (settings.txt
++// following_pokemon), and the extra palettes are the renderer's
++// (CtrVideo_SetExtObjPalette): set here, and fitted every frame to the fades
++// and weather tints the game puts on the sprite palettes, as the PC does.
++#include <stdio.h>
++
++// Not <stdlib.h>: global.h's abs() is a macro.
++void *malloc(size_t size);
++void free(void *ptr);
++
++FILE *CtrFs_OpenData(const char *relativePath, const char *mode);
++int CtrSettings_GetInt(const char *key, int fallback);
++void CtrLog_Write(int category, const char *format, ...);
++void CtrVideo_SetExtObjPalette(unsigned index, const u16 *colors);
++
++#define FOLLOWER_EXT_PALETTES 4
++
++static u8 *sFollowerPackData;
++static bool8 sFollowerPackTried;
++static const void *sExtImages[FOLLOWER_EXT_PALETTES];
++static u16 sExtColors[FOLLOWER_EXT_PALETTES][16];
++#define gFollowerPack ((const u8 *)sFollowerPackData)
++
++static bool8 LoadFollowerPack(void)
++{
++    FILE *file;
++    long size;
++
++    if (sFollowerPackData || sFollowerPackTried)
++        return sFollowerPackData != NULL;
++    sFollowerPackTried = TRUE;
++    file = CtrFs_OpenData("followers.pack", "rb");
++    if (!file)
++    {
++        CtrLog_Write(6, "followers: no followers.pack on the SD card");
++        return FALSE;
++    }
++    fseek(file, 0, SEEK_END);
++    size = ftell(file);
++    fseek(file, 0, SEEK_SET);
++    if (size > 16 && (sFollowerPackData = malloc(size)) != NULL
++     && fread(sFollowerPackData, 1, size, file) != (size_t)size)
++    {
++        free(sFollowerPackData);
++        sFollowerPackData = NULL;
++    }
++    fclose(file);
++    CtrLog_Write(5, "followers: pack %s (%ld bytes)", sFollowerPackData ? "loaded" : "not loaded", size);
++    return sFollowerPackData != NULL;
++}
++
++bool8 PlatformFollowingPokemonEnabled(void)
++{
++    return CtrSettings_GetInt("following_pokemon", 1) && LoadFollowerPack();
++}
++
++void PlatformSetExtObjPalette(u8 index, const void *images, const u16 *colors)
++{
++    if (index >= FOLLOWER_EXT_PALETTES)
++        return;
++    sExtImages[index] = images;
++    if (colors)
++        memcpy(sExtColors[index], colors, sizeof(sExtColors[index]));
++}
++
++u8 PlatformGetExtObjPalette(const void *images)
++{
++    int i;
++
++    if (!images)
++        return 0;
++    for (i = 0; i < FOLLOWER_EXT_PALETTES; i++)
++    {
++        if (sExtImages[i] == images)
++            return i + 1;
++    }
++    return 0;
++}
++
++// What the game is doing to the sprite palettes this frame (fades, weather
++// tints), fitted per channel as a*x+b from the player's and the NPCs'
++// palettes, applied to the extra ones (the PC's ppu.c, UpdateExtObjPalettes).
++static void UpdateExtObjPalettes(void)
++{
++    static const u8 slots[] = {0, 2, 3, 4, 5};
++    const u16 *unfaded = gPlttBufferUnfaded + 256;
++    const u16 *shown = gPlttBufferFaded + 256;
++    float a[3], b[3];
++    bool32 identity = TRUE;
++    int c, i, k, n = 0;
++
++    for (i = 0; i < (int)ARRAY_COUNT(slots); i++)
++    {
++        if (memcmp(&unfaded[slots[i] * 16], &shown[slots[i] * 16], 32))
++            identity = FALSE;
++    }
++    if (!identity)
++    {
++        for (c = 0; c < 3; c++)
++        {
++            float mx = 0, my = 0, sxx = 0, sxy = 0;
++            n = 0;
++            for (i = 0; i < (int)ARRAY_COUNT(slots); i++)
++            {
++                for (k = 1; k < 16; k++)
++                {
++                    mx += (unfaded[slots[i] * 16 + k] >> (c * 5)) & 31;
++                    my += (shown[slots[i] * 16 + k] >> (c * 5)) & 31;
++                    n++;
++                }
++            }
++            mx /= n;
++            my /= n;
++            for (i = 0; i < (int)ARRAY_COUNT(slots); i++)
++            {
++                for (k = 1; k < 16; k++)
++                {
++                    float x = (float)((unfaded[slots[i] * 16 + k] >> (c * 5)) & 31) - mx;
++                    float y = (float)((shown[slots[i] * 16 + k] >> (c * 5)) & 31) - my;
++                    sxx += x * x;
++                    sxy += x * y;
++                }
++            }
++            a[c] = sxx > 0 ? sxy / sxx : 1;
++            b[c] = my - a[c] * mx;
++        }
++    }
++    for (k = 0; k < FOLLOWER_EXT_PALETTES; k++)
++    {
++        u16 out[16];
++
++        if (!sExtImages[k])
++            continue;
++        if (identity)
++        {
++            CtrVideo_SetExtObjPalette(k, sExtColors[k]);
++            continue;
++        }
++        for (i = 0; i < 16; i++)
++        {
++            u16 color = 0;
++            for (c = 0; c < 3; c++)
++            {
++                int v = (int)(a[c] * ((sExtColors[k][i] >> (c * 5)) & 31) + b[c] + 0.5f);
++                if (v < 0) v = 0;
++                if (v > 31) v = 31;
++                color |= v << (c * 5);
++            }
++            out[i] = color;
++        }
++        CtrVideo_SetExtObjPalette(k, out);
++    }
++}
++#else
++extern const u8 gFollowerPack[];
++#endif
++
++// ---------------------------------------------------------------------------
++// Sprite pack (see tools/followers/followers.py)
++
++struct FollowerPackEntry
++{
++    u16 species;
++    u8 form;
++    u8 female;
++    u8 size;   // frames are size x size
++    u8 frames; // 6: down, up, left (right mirrored); 8: right too
++    u16 padding;
++    u32 palettes; // 16 normal + 16 shiny colours
++    u32 tiles;
++};
++
++#define PACK_ENTRIES ((const struct FollowerPackEntry *)(gFollowerPack + 16))
++#define NUM_EMOTE_FRAMES 23
++#define EMOTE_FRAME_SIZE (16 * 16 / 2)
++
++static u32 PackWord(u32 offset)
++{
++    u32 value;
++    memcpy(&value, gFollowerPack + offset, sizeof(value));
++    return value;
++}
++
++static const struct FollowerPackEntry *FindPackEntry(u16 species, u8 form, bool8 female)
++{
++    const struct FollowerPackEntry *best = NULL;
++    u32 i, count = PackWord(8);
++
++    for (i = 0; i < count; i++)
++    {
++        const struct FollowerPackEntry *e = &PACK_ENTRIES[i];
++        if (e->species != species)
++            continue;
++        if (e->form == form && e->female == female)
++            return e;
++        if (!best || (e->form == form && best->form != form) || (e->form == 0 && !e->female && best->form != form))
++            best = e;
++    }
++    return best;
++}
++
++// ---------------------------------------------------------------------------
++// Graphics
++
++#define EXT_PALETTE_FOLLOWER 0
++#define EXT_PALETTE_EMOTE    1
++
++// Frames: 0-1 down, 2-3 up, 4-5 left, 6-7 right. The walk cycle keeps going
++// while it stands still, as in HGSS.
++#define FACE(name, a, b, flip) static const union AnimCmd name[] = { \
++    ANIMCMD_FRAME(a, 16, .hFlip = flip), ANIMCMD_FRAME(b, 16, .hFlip = flip), \
++    ANIMCMD_FRAME(a, 16, .hFlip = flip), ANIMCMD_FRAME(b, 16, .hFlip = flip), ANIMCMD_JUMP(0)}
++#define GO(name, a, b, flip, d) static const union AnimCmd name[] = { \
++    ANIMCMD_FRAME(b, d, .hFlip = flip), ANIMCMD_FRAME(a, d, .hFlip = flip), \
++    ANIMCMD_FRAME(b, d, .hFlip = flip), ANIMCMD_FRAME(a, d, .hFlip = flip), ANIMCMD_JUMP(0)}
++
++FACE(sAnim_FaceSouth, 0, 1, FALSE);
++FACE(sAnim_FaceNorth, 2, 3, FALSE);
++FACE(sAnim_FaceWest, 4, 5, FALSE);
++FACE(sAnim_FaceEastMirrored, 4, 5, TRUE);
++FACE(sAnim_FaceEast, 6, 7, FALSE);
++GO(sAnim_GoSouth, 0, 1, FALSE, 8);
++GO(sAnim_GoNorth, 2, 3, FALSE, 8);
++GO(sAnim_GoWest, 4, 5, FALSE, 8);
++GO(sAnim_GoEastMirrored, 4, 5, TRUE, 8);
++GO(sAnim_GoEast, 6, 7, FALSE, 8);
++GO(sAnim_GoFastSouth, 0, 1, FALSE, 4);
++GO(sAnim_GoFastNorth, 2, 3, FALSE, 4);
++GO(sAnim_GoFastWest, 4, 5, FALSE, 4);
++GO(sAnim_GoFastEastMirrored, 4, 5, TRUE, 4);
++GO(sAnim_GoFastEast, 6, 7, FALSE, 4);
++GO(sAnim_GoFasterSouth, 0, 1, FALSE, 2);
++GO(sAnim_GoFasterNorth, 2, 3, FALSE, 2);
++GO(sAnim_GoFasterWest, 4, 5, FALSE, 2);
++GO(sAnim_GoFasterEastMirrored, 4, 5, TRUE, 2);
++GO(sAnim_GoFasterEast, 6, 7, FALSE, 2);
++GO(sAnim_GoFastestSouth, 0, 1, FALSE, 1);
++GO(sAnim_GoFastestNorth, 2, 3, FALSE, 1);
++GO(sAnim_GoFastestWest, 4, 5, FALSE, 1);
++GO(sAnim_GoFastestEastMirrored, 4, 5, TRUE, 1);
++GO(sAnim_GoFastestEast, 6, 7, FALSE, 1);
++
++#undef FACE
++#undef GO
++
++#define ANIM_TABLE(name, east) static const union AnimCmd *const name[ANIM_STD_COUNT] = { \
++    [ANIM_STD_FACE_SOUTH] = sAnim_FaceSouth, [ANIM_STD_FACE_NORTH] = sAnim_FaceNorth, \
++    [ANIM_STD_FACE_WEST] = sAnim_FaceWest, [ANIM_STD_FACE_EAST] = sAnim_FaceEast##east, \
++    [ANIM_STD_GO_SOUTH] = sAnim_GoSouth, [ANIM_STD_GO_NORTH] = sAnim_GoNorth, \
++    [ANIM_STD_GO_WEST] = sAnim_GoWest, [ANIM_STD_GO_EAST] = sAnim_GoEast##east, \
++    [ANIM_STD_GO_FAST_SOUTH] = sAnim_GoFastSouth, [ANIM_STD_GO_FAST_NORTH] = sAnim_GoFastNorth, \
++    [ANIM_STD_GO_FAST_WEST] = sAnim_GoFastWest, [ANIM_STD_GO_FAST_EAST] = sAnim_GoFastEast##east, \
++    [ANIM_STD_GO_FASTER_SOUTH] = sAnim_GoFasterSouth, [ANIM_STD_GO_FASTER_NORTH] = sAnim_GoFasterNorth, \
++    [ANIM_STD_GO_FASTER_WEST] = sAnim_GoFasterWest, [ANIM_STD_GO_FASTER_EAST] = sAnim_GoFasterEast##east, \
++    [ANIM_STD_GO_FASTEST_SOUTH] = sAnim_GoFastestSouth, [ANIM_STD_GO_FASTEST_NORTH] = sAnim_GoFastestNorth, \
++    [ANIM_STD_GO_FASTEST_WEST] = sAnim_GoFastestWest, [ANIM_STD_GO_FASTEST_EAST] = sAnim_GoFastestEast##east}
++
++ANIM_TABLE(sAnimTable_Mirrored, Mirrored);
++ANIM_TABLE(sAnimTable_OwnEast, );
++
++#undef ANIM_TABLE
++
++static struct SpriteFrameImage sFrameImages[8];
++static struct ObjectEventGraphicsInfo sGraphicsInfo;
++static u16 sPalette[16];
++
++static struct SpriteFrameImage sEmoteImages[2];
++static u16 sEmotePalette[16];
++
++// ---------------------------------------------------------------------------
++// State (RAM only)
++
++#define TRAIL_LENGTH 8
++
++struct TrailStep
++{
++    s16 x, y;
++    u8 kind; // how the player left this tile (see Follower_OnPlayerStep)
++};
++
++static struct
++{
++    // What the graphics show.
++    bool8 haveGraphics;
++    u16 species;
++    u8 form;
++    bool8 female;
++    bool8 shiny;
++
++    // HGSS's mood, for the Pokemon it was registered for.
++    bool8 moodRegistered;
++    u16 moodSpecies;
++    u32 moodPersonality;
++    s8 mood;
++
++    // Where the player has been that the follower hasn't reached yet.
++    struct TrailStep trail[TRAIL_LENGTH];
++    u8 trailCount;
++
++    // Talking to it.
++    bool8 interacting;
++    u8 talkKind;
++    const struct FollowerQuestion *question;
++    u16 foundItem;
++    u16 stepsSinceItem;
++    u16 stepsSinceFriendship;
++    u8 emoteSpriteId;
++    u8 lookDirection; // where the thing it's looking at is
++
++    // Going into buildings and out again.
++    bool8 mapKnown;
++    u16 lastMap;
++    bool8 recalled;    // back in its Ball until the map changes
++    bool8 inCutscene;  // back in its Ball until the script that walked into it ends
++    bool8 waitForStep; // just left a building: out on the player's first step
++} sFollower = {.emoteSpriteId = MAX_SPRITES};
++
++// ---------------------------------------------------------------------------
++// Which Pokemon follows, and where
++
++// The tallest Pokemon (tp_param's too_tall) stay outside buildings.
++static bool8 IsTooTall(u16 species)
++{
++    switch (species)
++    {
++    case SPECIES_STEELIX:
++    case SPECIES_LUGIA:
++    case SPECIES_HO_OH:
++    case SPECIES_WAILORD:
++    case SPECIES_KYOGRE:
++    case SPECIES_GROUDON:
++    case SPECIES_RAYQUAZA:
++        return TRUE;
++    }
++    return FALSE;
++}
++
++static u16 CurrentMapId(void)
++{
++    return gSaveBlock1Ptr->location.mapNum | (gSaveBlock1Ptr->location.mapGroup << 8);
++}
++
++// HGSS gives every map a follow mode: none allowed, not the tallest ones, or
++// all. Emerald's maps get theirs here: none where the game takes over the
++// party or the player (link rooms, battle facilities, the Safari Zone, as in
++// HGSS), height-restricted indoors.
++static bool8 IsAllowedHere(u16 species)
++{
++    u8 mapType = gMapHeader.mapType;
++    u16 mapSec = gMapHeader.regionMapSectionId;
++
++    if (InUnionRoom() || InTrainerHill() || CurrentBattlePyramidLocation() != PYRAMID_LOCATION_NONE
++     || GetSafariZoneFlag() || mapSec == MAPSEC_SAFARI_ZONE)
++        return FALSE;
++    switch (CurrentMapId())
++    {
++    case MAP_TRADE_CENTER:
++    case MAP_RECORD_CORNER:
++    case MAP_BATTLE_COLOSSEUM_2P:
++    case MAP_BATTLE_COLOSSEUM_4P:
++    case MAP_UNION_ROOM:
++        return FALSE;
++    }
++    if (mapSec == MAPSEC_BATTLE_FRONTIER && mapType == MAP_TYPE_INDOOR)
++        return FALSE;
++    if (mapType == MAP_TYPE_UNDERWATER)
++        return FALSE;
++    if ((mapType == MAP_TYPE_INDOOR || mapType == MAP_TYPE_SECRET_BASE) && IsTooTall(species))
++        return FALSE;
++    return TRUE;
++}
++
++static bool8 IsEggOrEmpty(struct Pokemon *mon)
++{
++    u16 species = GetMonData(mon, MON_DATA_SPECIES_OR_EGG);
++    return species == SPECIES_NONE || species == SPECIES_EGG;
++}
++
++// The first Pokemon that can battle, or the first that isn't an Egg.
++static struct Pokemon *GetFollowerMon(void)
++{
++    int i;
++    for (i = 0; i < PARTY_SIZE; i++)
++    {
++        if (!IsEggOrEmpty(&gPlayerParty[i]) && GetMonData(&gPlayerParty[i], MON_DATA_HP) != 0)
++            return &gPlayerParty[i];
++    }
++    for (i = 0; i < PARTY_SIZE; i++)
++    {
++        if (!IsEggOrEmpty(&gPlayerParty[i]))
++            return &gPlayerParty[i];
++    }
++    return NULL;
++}
++
++static struct ObjectEvent *GetPlayerObject(void)
++{
++    struct ObjectEvent *player;
++    if (gPlayerAvatar.objectEventId >= OBJECT_EVENTS_COUNT)
++        return NULL;
++    player = &gObjectEvents[gPlayerAvatar.objectEventId];
++    return (player->active && player->isPlayer) ? player : NULL;
++}
++
++// The Pokemon that should be out now, or NULL.
++static struct Pokemon *GetVisibleFollowerMon(void)
++{
++    struct ObjectEvent *player = GetPlayerObject();
++    struct Pokemon *mon;
++
++    if (!PlatformFollowingPokemonEnabled() || !player || player->invisible)
++        return NULL;
++    // Back in its Ball on a Bike or in the water, as in HGSS.
++    if (gPlayerAvatar.flags & (PLAYER_AVATAR_FLAG_SURFING | PLAYER_AVATAR_FLAG_UNDERWATER
++                             | PLAYER_AVATAR_FLAG_MACH_BIKE | PLAYER_AVATAR_FLAG_ACRO_BIKE))
++        return NULL;
++    mon = GetFollowerMon();
++    if (!mon || !IsAllowedHere(GetMonData(mon, MON_DATA_SPECIES)))
++        return NULL;
++    return mon;
++}
++
++bool8 Follower_IsFollower(const struct ObjectEvent *objectEvent)
++{
++    return objectEvent->active && objectEvent->localId == LOCALID_FOLLOWER
++        && objectEvent->graphicsId == OBJ_EVENT_GFX_FOLLOWER;
++}
++
++static struct ObjectEvent *GetFollowerObject(void)
++{
++    int i;
++    for (i = 0; i < OBJECT_EVENTS_COUNT; i++)
++    {
++        if (Follower_IsFollower(&gObjectEvents[i]))
++            return &gObjectEvents[i];
++    }
++    return NULL;
++}
++
++// ---------------------------------------------------------------------------
++// Mood (HGSS's FieldSystem_UnkSub108_*)
++
++static bool8 IsMoodMon(struct Pokemon *mon)
++{
++    return sFollower.moodRegistered && GetMonData(mon, MON_DATA_SPECIES) == sFollower.moodSpecies
++        && GetMonData(mon, MON_DATA_PERSONALITY) == sFollower.moodPersonality;
++}
++
++// A different Pokemon following starts from a neutral mood.
++static void RegisterMoodMon(struct Pokemon *mon)
++{
++    u16 species = GetMonData(mon, MON_DATA_SPECIES);
++    u32 personality = GetMonData(mon, MON_DATA_PERSONALITY);
++    if (species != SPECIES_NONE && (!sFollower.moodRegistered || sFollower.moodSpecies != species
++                                    || sFollower.moodPersonality != personality))
++    {
++        sFollower.moodRegistered = TRUE;
++        sFollower.moodSpecies = species;
++        sFollower.moodPersonality = personality;
++        sFollower.mood = 0;
++    }
++}
++
++static void AddMood(s32 by)
++{
++    s32 mood = sFollower.mood + by;
++    if (mood > 127)
++        mood = 127;
++    else if (mood < -127)
++        mood = -127;
++    sFollower.mood = mood;
++}
++
++// pokemon_mood.c's sMoodModifiers, by what Emerald calls the events.
++void Follower_OnFriendshipEvent(struct Pokemon *mon, u8 event)
++{
++    if (!IsMoodMon(mon))
++        return;
++    switch (event)
++    {
++    case FRIENDSHIP_EVENT_GROW_LEVEL: // MON_MOOD_MODIFIER_LEVEL_UP_IN_BATTLE
++    case FRIENDSHIP_EVENT_LEARN_TMHM:
++        AddMood(40);
++        break;
++    case FRIENDSHIP_EVENT_FAINT_SMALL:
++        AddMood(-80);
++        break;
++    case FRIENDSHIP_EVENT_FAINT_LARGE: // fainted against a foe 30+ levels higher
++        AddMood(-100);
++        break;
++    case FRIENDSHIP_EVENT_FAINT_FIELD_PSN: // MON_MOOD_MODIFIER_SURVIVED_PSN
++        AddMood(-50);
++        break;
++    }
++}
++
++// pokemon_mood.c's ItemIdGetMoodEffect.
++void Follower_OnItemUsed(struct Pokemon *mon, u16 item)
++{
++    if (!IsMoodMon(mon))
++        return;
++    switch (item)
++    {
++    case ITEM_RARE_CANDY:
++        AddMood(40);
++        break;
++    case ITEM_ENERGY_POWDER:
++    case ITEM_HEAL_POWDER:
++        AddMood(-20);
++        break;
++    case ITEM_ENERGY_ROOT:
++        AddMood(-30);
++        break;
++    case ITEM_REVIVAL_HERB:
++        AddMood(-40);
++        break;
++    case ITEM_HP_UP:
++    case ITEM_PROTEIN:
++    case ITEM_IRON:
++    case ITEM_CARBOS:
++    case ITEM_CALCIUM:
++    case ITEM_ZINC:
++        AddMood(8);
++        break;
++    case ITEM_GUARD_SPEC:
++    case ITEM_DIRE_HIT:
++    case ITEM_X_ATTACK:
++    case ITEM_X_DEFEND:
++    case ITEM_X_SPEED:
++    case ITEM_X_ACCURACY:
++    case ITEM_X_SPECIAL:
++        AddMood(10);
++        break;
++    }
++}
++
++void Follower_OnPlayerStepTaken(void)
++{
++    if (sFollower.stepsSinceItem < 0xFFFF)
++        sFollower.stepsSinceItem++;
++    if (sFollower.stepsSinceFriendship < 0xFFFF)
++        sFollower.stepsSinceFriendship++;
++    // FieldSystem_UnkSub108_MoveMoodTowardsNeutral, while it's out.
++    if (GetFollowerObject())
++    {
++        if (sFollower.mood < 0)
++            sFollower.mood++;
++        else if (sFollower.mood > 0)
++            sFollower.mood--;
++    }
++}
++
++// ---------------------------------------------------------------------------
++// The object
++
++static void BuildGraphics(struct Pokemon *mon)
++{
++    u16 species = GetMonData(mon, MON_DATA_SPECIES);
++    u8 form = species == SPECIES_UNOWN ? GET_UNOWN_LETTER(GetMonData(mon, MON_DATA_PERSONALITY)) : 0;
++    bool8 female = GetMonGender(mon) == MON_FEMALE;
++    bool8 shiny = IsMonShiny(mon);
++    const struct FollowerPackEntry *e = FindPackEntry(species, form, female);
++    u32 frameSize, i;
++
++    if (!e)
++        e = FindPackEntry(SPECIES_BULBASAUR, 0, FALSE);
++    frameSize = e->size * e->size / 2;
++    for (i = 0; i < ARRAY_COUNT(sFrameImages); i++)
++    {
++        u32 frame = i < e->frames ? i : i - 2; // right: the left frames, mirrored
++        sFrameImages[i].data = gFollowerPack + e->tiles + frame * frameSize;
++        sFrameImages[i].size = frameSize;
++    }
++    memcpy(sPalette, gFollowerPack + e->palettes + (shiny ? 32 : 0), sizeof(sPalette));
++    InitFollowerGraphicsInfo(&sGraphicsInfo, e->size, e->frames == 8 ? sAnimTable_OwnEast : sAnimTable_Mirrored,
++                             sFrameImages);
++    PlatformSetExtObjPalette(EXT_PALETTE_FOLLOWER, sFrameImages, sPalette);
++
++    sFollower.haveGraphics = TRUE;
++    sFollower.species = species;
++    sFollower.form = form;
++    sFollower.female = female;
++    sFollower.shiny = shiny;
++}
++
++// Returns TRUE if the graphics changed.
++static bool8 UpdateGraphics(struct Pokemon *mon)
++{
++    u16 species = GetMonData(mon, MON_DATA_SPECIES);
++    u8 form = species == SPECIES_UNOWN ? GET_UNOWN_LETTER(GetMonData(mon, MON_DATA_PERSONALITY)) : 0;
++
++    RegisterMoodMon(mon);
++    if (sFollower.haveGraphics && sFollower.species == species && sFollower.form == form
++     && sFollower.female == (GetMonGender(mon) == MON_FEMALE) && sFollower.shiny == IsMonShiny(mon))
++        return FALSE;
++    BuildGraphics(mon);
++    return TRUE;
++}
++
++const struct ObjectEventGraphicsInfo *Follower_GetGraphicsInfo(void)
++{
++    if (!sFollower.haveGraphics)
++    {
++        struct Pokemon *mon = GetFollowerMon();
++        if (mon)
++            BuildGraphics(mon);
++        else
++            return NULL;
++    }
++    return &sGraphicsInfo;
++}
++
++const u8 *Follower_GetScript(void)
++{
++    return EventScript_Follower;
++}
++
++static void ClearTrail(void)
++{
++    sFollower.trailCount = 0;
++}
++
++void Follower_ShiftCoords(s16 dx, s16 dy)
++{
++    int i;
++    for (i = 0; i < sFollower.trailCount; i++)
++    {
++        sFollower.trail[i].x -= dx;
++        sFollower.trail[i].y -= dy;
++    }
++}
++
++static void RemoveFollower(struct ObjectEvent *obj)
++{
++    RemoveObjectEventById(obj - gObjectEvents);
++    ClearTrail();
++}
++
++bool8 Follower_YieldObjectSlot(void)
++{
++    struct ObjectEvent *obj = GetFollowerObject();
++    if (!obj || sFollower.interacting)
++        return FALSE;
++    RemoveFollower(obj);
++    return TRUE;
++}
++
++static int CountFreeObjectSlots(void)
++{
++    int i, count = 0;
++    for (i = 0; i < OBJECT_EVENTS_COUNT; i++)
++    {
++        if (!gObjectEvents[i].active)
++            count++;
++    }
++    return count;
++}
++
++static struct ObjectEvent *SpawnFollower(s16 x, s16 y, u8 direction)
++{
++    struct ObjectEvent *player = GetPlayerObject();
++    struct ObjectEvent *obj;
++    u8 id;
++
++    // Leave a slot for objects scripts add (the follower gives its own up
++    // to any object that needs one, see Follower_YieldObjectSlot).
++    if (!player || !sFollower.haveGraphics || CountFreeObjectSlots() < 2)
++        return NULL;
++    id = SpawnSpecialObjectEventParameterized(OBJ_EVENT_GFX_FOLLOWER, MOVEMENT_TYPE_NONE, LOCALID_FOLLOWER,
++                                              x, y, player->currentElevation);
++    if (id >= OBJECT_EVENTS_COUNT)
++        return NULL;
++    obj = &gObjectEvents[id];
++    ObjectEventTurn(obj, direction);
++    ClearTrail();
++    return obj;
++}
++
++static bool8 IsMoving(struct ObjectEvent *obj)
++{
++    return obj->singleMovementActive || (obj->heldMovementActive && !obj->heldMovementFinished);
++}
++
++// ---------------------------------------------------------------------------
++// In and out of its Poke Ball (the one it was caught in)
++
++enum { BALL_RELEASE, BALL_RECALL };
++
++static const struct OamData sOam_Ball = {
++    .shape = SPRITE_SHAPE(16x16),
++    .size = SPRITE_SIZE(16x16),
++    .priority = 2,
++};
++
++// The battle Poke Ball graphics: closed, half open and open.
++static const union AnimCmd sAnim_BallClosed[] = {ANIMCMD_FRAME(0, 1), ANIMCMD_END};
++static const union AnimCmd sAnim_BallOpen[] = {ANIMCMD_FRAME(4, 4), ANIMCMD_FRAME(8, 4), ANIMCMD_END};
++static const union AnimCmd sAnim_BallClose[] = {ANIMCMD_FRAME(8, 4), ANIMCMD_FRAME(4, 4), ANIMCMD_FRAME(0, 4), ANIMCMD_END};
++static const union AnimCmd *const sAnims_Ball[] = {sAnim_BallClosed, sAnim_BallOpen, sAnim_BallClose};
++enum { BALL_ANIM_CLOSED, BALL_ANIM_OPEN, BALL_ANIM_CLOSE };
++
++static struct SpriteTemplate sBallTemplate;
++
++// Drawn in front of or behind other objects by where it is, like them:
++// data[2] 0 in front of the others on its tile, 2 behind them (the player
++// is still on the tile it comes out on).
++static void SpriteCB_Ball(struct Sprite *sprite)
++{
++    // The player's priority (set from the elevation both are at; a just
++    // spawned follower doesn't have its own yet).
++    if (gPlayerAvatar.spriteId < MAX_SPRITES)
++        sprite->oam.priority = gSprites[gPlayerAvatar.spriteId].oam.priority;
++    SetObjectSubpriorityByElevation(sprite->data[1], sprite, sprite->data[2]);
++}
++
++// Mixes the follower's colours with white (0-16): the flash as it comes out
++// of or goes into its Ball.
++static void SetFollowerWhiteness(int amount)
++{
++    u16 colors[16];
++    int i, c;
++
++    for (i = 0; i < 16; i++)
++    {
++        u16 color = 0;
++        for (c = 0; c < 3; c++)
++        {
++            int v = (sPalette[i] >> (c * 5)) & 31;
++            v += (31 - v) * amount / 16;
++            color |= v << (c * 5);
++        }
++        colors[i] = color;
++    }
++    PlatformSetExtObjPalette(EXT_PALETTE_FOLLOWER, sFrameImages, colors);
++}
++
++// A Ball on the follower's tile, in front of it. MAX_SPRITES if there's no
++// room for it (the Pokemon still flashes in or out).
++static u8 CreateBallSprite(struct ObjectEvent *obj, struct Pokemon *mon, u8 mode)
++{
++    struct Sprite *monSprite = &gSprites[obj->spriteId];
++    u8 ballId = ItemIdToBallId(GetMonData(mon, MON_DATA_POKEBALL));
++    u16 tileTag, paletteTag;
++    u8 paletteIndex, spriteId;
++
++    if (ballId >= POKEBALL_COUNT)
++        ballId = BALL_POKE;
++    tileTag = gBallSpriteSheets[ballId].tag;
++    paletteTag = gBallSpritePalettes[ballId].tag;
++    if (GetSpriteTileStartByTag(tileTag) == 0xFFFF)
++        LoadCompressedSpriteSheet(&gBallSpriteSheets[ballId]);
++    if (IndexOfSpritePaletteTag(paletteTag) == 0xFF)
++    {
++        LoadCompressedSpritePalette(&gBallSpritePalettes[ballId]);
++        paletteIndex = IndexOfSpritePaletteTag(paletteTag);
++        if (paletteIndex == 0xFF)
++        {
++            FreeSpriteTilesByTag(tileTag);
++            return MAX_SPRITES;
++        }
++        UpdateSpritePaletteWithWeather(paletteIndex);
++    }
++
++    sBallTemplate.tileTag = tileTag;
++    sBallTemplate.paletteTag = paletteTag;
++    sBallTemplate.oam = &sOam_Ball;
++    sBallTemplate.anims = sAnims_Ball;
++    sBallTemplate.images = NULL;
++    sBallTemplate.affineAnims = gDummySpriteAffineAnimTable;
++    sBallTemplate.callback = SpriteCB_Ball;
++    spriteId = CreateSprite(&sBallTemplate, monSprite->x, monSprite->y + sGraphicsInfo.height / 2 - 8, 0);
++    if (spriteId == MAX_SPRITES)
++    {
++        FreeSpriteTilesByTag(tileTag);
++        FreeSpritePaletteByTag(paletteTag);
++        return MAX_SPRITES;
++    }
++    gSprites[spriteId].coordOffsetEnabled = TRUE;
++    gSprites[spriteId].oam.priority = monSprite->oam.priority;
++    gSprites[spriteId].data[0] = ballId;
++    gSprites[spriteId].data[1] = obj->previousElevation;
++    gSprites[spriteId].data[2] = mode == BALL_RELEASE ? 2 : 0;
++    SpriteCB_Ball(&gSprites[spriteId]);
++
++    return spriteId;
++}
++
++static void DestroyBallSprite(u8 spriteId)
++{
++    if (spriteId < MAX_SPRITES && gSprites[spriteId].inUse)
++    {
++        u8 ballId = gSprites[spriteId].data[0];
++        DestroySprite(&gSprites[spriteId]);
++        FreeSpriteTilesByTag(gBallSpriteSheets[ballId].tag);
++        FreeSpritePaletteByTag(gBallSpritePalettes[ballId].tag);
++    }
++}
++
++#define tMode   data[0]
++#define tTimer  data[1]
++#define tBall   data[2]
++#define tObjId  data[3]
++
++static void FinishBallTask(u8 taskId)
++{
++    struct Task *task = &gTasks[taskId];
++    struct ObjectEvent *obj = &gObjectEvents[task->tObjId];
++
++    DestroyBallSprite(task->tBall);
++    if (Follower_IsFollower(obj))
++    {
++        if (task->tMode == BALL_RECALL)
++        {
++            RemoveFollower(obj);
++        }
++        else
++        {
++            obj->invisible = FALSE;
++            gSprites[obj->spriteId].invisible = FALSE;
++        }
++    }
++    SetFollowerWhiteness(0);
++    DestroyTask(taskId);
++}
++
++static void Task_FollowerBall(u8 taskId)
++{
++    struct Task *task = &gTasks[taskId];
++    struct ObjectEvent *obj = &gObjectEvents[task->tObjId];
++    struct Sprite *ball = task->tBall < MAX_SPRITES ? &gSprites[task->tBall] : NULL;
++    bool8 haveMon = Follower_IsFollower(obj);
++    int t = task->tTimer++;
++
++    if (task->tMode == BALL_RELEASE)
++    {
++        // Half a step after the player leaves the spot, the Ball appears
++        // there, hops and opens, and out comes the Pokemon in a white flash.
++        if (ball)
++        {
++            ball->invisible = t < 8;
++            ball->y2 = (t >= 8 && t < 14) ? -((t - 8) * (14 - t)) / 3 : 0;
++        }
++        if (t == 14)
++        {
++            if (ball)
++                StartSpriteAnim(ball, BALL_ANIM_OPEN);
++            PlaySE(SE_BALL_OPEN);
++        }
++        if (t >= 16 && haveMon)
++        {
++            obj->invisible = FALSE;
++            SetFollowerWhiteness(t < 28 ? (28 - t) * 16 / 12 : 0);
++        }
++        if (t == 22)
++        {
++            DestroyBallSprite(task->tBall);
++            task->tBall = MAX_SPRITES;
++        }
++        if (t >= 28)
++            FinishBallTask(taskId);
++    }
++    else
++    {
++        // It goes white and into the open Ball, which closes and lifts away.
++        if (t == 0)
++            PlaySE(SE_BALL_TRADE);
++        if (t <= 8 && haveMon)
++            SetFollowerWhiteness(t * 2);
++        if (t == 8)
++        {
++            if (haveMon)
++                RemoveFollower(obj);
++            if (ball)
++                StartSpriteAnim(ball, BALL_ANIM_CLOSE);
++        }
++        if (ball && t > 20)
++            ball->y2 = -(t - 20) * 2;
++        if (t >= 26)
++            FinishBallTask(taskId);
++    }
++}
++
++static void StartBallTask(struct ObjectEvent *obj, u8 mode)
++{
++    struct Pokemon *mon = GetFollowerMon();
++    u8 taskId = FindTaskIdByFunc(Task_FollowerBall);
++
++    if (taskId != TASK_NONE)
++        FinishBallTask(taskId); // one at a time
++    if (!Follower_IsFollower(obj))
++        return;
++    taskId = CreateTask(Task_FollowerBall, 81);
++    gTasks[taskId].tMode = mode;
++    gTasks[taskId].tObjId = obj - gObjectEvents;
++    gTasks[taskId].tBall = mon ? CreateBallSprite(obj, mon, mode) : MAX_SPRITES;
++
++    if (mode == BALL_RELEASE)
++    {
++        obj->invisible = TRUE;
++        gSprites[obj->spriteId].invisible = TRUE;
++        if (gTasks[taskId].tBall < MAX_SPRITES)
++        {
++            StartSpriteAnim(&gSprites[gTasks[taskId].tBall], BALL_ANIM_CLOSED);
++            gSprites[gTasks[taskId].tBall].invisible = TRUE;
++        }
++
++    }
++    else if (gTasks[taskId].tBall < MAX_SPRITES)
++    {
++        StartSpriteAnim(&gSprites[gTasks[taskId].tBall], BALL_ANIM_OPEN);
++    }
++}
++
++#undef tMode
++#undef tTimer
++#undef tBall
++#undef tObjId
++
++// Comes out of its Ball at (x, y).
++static struct ObjectEvent *ReleaseFollower(s16 x, s16 y, u8 direction)
++{
++    struct ObjectEvent *obj = SpawnFollower(x, y, direction);
++    if (obj)
++        StartBallTask(obj, BALL_RELEASE);
++    return obj;
++}
++
++// The player is about to warp: going into a building, the Pokemon goes back
++// into its Ball as the door opens, and stays there until the next map.
++void Follower_OnWarpStart(void)
++{
++    struct ObjectEvent *obj;
++
++    if (IsMapTypeIndoors(gMapHeader.mapType) || !IsMapTypeIndoors(GetWarpDestinationMapType()))
++        return;
++    sFollower.recalled = TRUE;
++    ClearTrail();
++    obj = GetFollowerObject();
++    if (obj && !sFollower.interacting)
++        StartBallTask(obj, BALL_RECALL);
++}
++
++// Someone (the player included) stepping onto the follower's tile while a
++// script has the player held, in a cutscene or as a trainer walks up: the
++// Pokemon goes back into its Ball rather than being walked through, and
++// comes out again once the script is over and the player can move.
++// Called from ShiftObjectEventCoords as `mover` starts a step to (x, y).
++void Follower_OnObjectStep(const struct ObjectEvent *mover, s16 x, s16 y)
++{
++    struct ObjectEvent *obj;
++
++    if (sFollower.inCutscene || sFollower.interacting || Follower_IsFollower(mover))
++        return;
++    if (!ScriptContext_IsEnabled() && !ArePlayerFieldControlsLocked())
++        return;
++    obj = GetFollowerObject();
++    if (!obj || obj->invisible)
++        return;
++    if ((x == obj->currentCoords.x && y == obj->currentCoords.y)
++     || (IsMoving(obj) && x == obj->previousCoords.x && y == obj->previousCoords.y))
++    {
++        sFollower.inCutscene = TRUE;
++        ClearTrail();
++        StartBallTask(obj, BALL_RECALL);
++    }
++}
++
++// Somewhere the follower can stand: walkable, at the player's height and
++// free of other objects.
++static bool8 CanStandAt(struct ObjectEvent *player, s16 x, s16 y)
++{
++    u8 behavior = MapGridGetMetatileBehaviorAt(x, y);
++    u8 elevation = MapGridGetElevationAt(x, y);
++
++    if (MapGridGetCollisionAt(x, y) || GetObjectEventIdByXY(x, y) != OBJECT_EVENTS_COUNT)
++        return FALSE;
++    if (elevation != 0 && elevation != 15 && player->currentElevation != 0 && player->currentElevation != 15
++     && elevation != player->currentElevation)
++        return FALSE;
++    if (MetatileBehavior_IsSurfableWaterOrUnderwater(behavior) || MetatileBehavior_IsWaterfall(behavior))
++        return FALSE;
++    return TRUE;
++}
++
++// After a map loads (or the Pokemon comes back out) it appears behind the
++// player if there's room; otherwise it comes out on the player's next step.
++static void TrySpawnBehindPlayer(void)
++{
++    struct ObjectEvent *player = GetPlayerObject();
++    s16 x, y;
++
++    if (!player || IsMoving(player) || ArePlayerFieldControlsLocked() || gPaletteFade.active)
++        return;
++    x = player->currentCoords.x;
++    y = player->currentCoords.y;
++    MoveCoords(GetOppositeDirection(player->facingDirection), &x, &y);
++    if (!sFollower.waitForStep && CanStandAt(player, x, y))
++        ReleaseFollower(x, y, player->facingDirection);
++}
++
++// The walk that takes the follower one tile in `direction`, keeping up with
++// a player who moved the way `kind` says (faster if it's behind).
++static u8 GetWalkAction(u8 kind, u8 direction, bool8 hurry)
++{
++    switch (kind)
++    {
++    case FOLLOWER_STEP_SLOW:
++        return hurry ? GetWalkNormalMovementAction(direction) : GetWalkSlowMovementAction(direction);
++    case FOLLOWER_STEP_NORMAL:
++    case FOLLOWER_STEP_JUMP:
++    case FOLLOWER_STEP_JUMP2:
++    default:
++        return hurry ? GetWalkFastMovementAction(direction) : GetWalkNormalMovementAction(direction);
++    case FOLLOWER_STEP_FAST:
++        return hurry ? GetWalkFasterMovementAction(direction) : GetWalkFastMovementAction(direction);
++    case FOLLOWER_STEP_FAST_2:
++        return hurry ? GetWalkFasterMovementAction(direction) : GetRideWaterCurrentMovementAction(direction);
++    case FOLLOWER_STEP_FASTER:
++        return hurry ? GetSlideMovementAction(direction) : GetWalkFasterMovementAction(direction);
++    case FOLLOWER_STEP_FASTEST:
++        return GetSlideMovementAction(direction);
++    }
++}
++
++// Sends the follower to the next tile of the player's trail if it's free.
++// Returns TRUE if it started moving.
++static bool8 FollowTrail(struct ObjectEvent *obj)
++{
++    while (sFollower.trailCount > 0 && !IsMoving(obj))
++    {
++        struct TrailStep step = sFollower.trail[0];
++        s16 dx = step.x - obj->currentCoords.x;
++        s16 dy = step.y - obj->currentCoords.y;
++        u8 direction, action;
++
++        memmove(&sFollower.trail[0], &sFollower.trail[1], (sFollower.trailCount - 1) * sizeof(sFollower.trail[0]));
++        sFollower.trailCount--;
++
++        if (dx == 0 && dy == 0)
++            continue;
++        if (dy > 0)
++            direction = DIR_SOUTH;
++        else if (dy < 0)
++            direction = DIR_NORTH;
++        else if (dx < 0)
++            direction = DIR_WEST;
++        else
++            direction = DIR_EAST;
++
++        if (abs(dx) + abs(dy) == 1)
++        {
++            action = GetWalkAction(step.kind, direction, sFollower.trailCount > 0);
++        }
++        else if ((abs(dx) == 2 && dy == 0) || (dx == 0 && abs(dy) == 2))
++        {
++            action = GetJump2MovementAction(direction); // over the ledge the player jumped
++        }
++        else
++        {
++            // Lost track (the player was moved some other way): catch up.
++            MoveObjectEventToMapCoords(obj, step.x, step.y);
++            continue;
++        }
++        ObjectEventClearHeldMovementIfFinished(obj);
++        if (ObjectEventSetHeldMovement(obj, action))
++            return FALSE;
++        return TRUE;
++    }
++    return FALSE;
++}
++
++// The player started a step from (fromX, fromY), `kind` saying how (one of
++// FOLLOWER_STEP_*). Called from the player's sprite callback, so the
++// follower can start its step in the same frame.
++void Follower_OnPlayerStep(s16 fromX, s16 fromY, u8 kind)
++{
++    struct ObjectEvent *obj = GetFollowerObject();
++    struct ObjectEvent *player = GetPlayerObject();
++
++    if (!player || sFollower.interacting || sFollower.recalled || sFollower.inCutscene)
++        return;
++    if (!obj)
++    {
++        struct Pokemon *mon = GetVisibleFollowerMon();
++        // Out of its Ball where the player was standing. After leaving a
++        // building, not on the step out of the door but the one after.
++        if (mon && !(sFollower.waitForStep && ArePlayerFieldControlsLocked()))
++        {
++            UpdateGraphics(mon);
++            if (ReleaseFollower(fromX, fromY, player->movementDirection))
++                sFollower.waitForStep = FALSE;
++        }
++        return;
++    }
++
++    if (sFollower.trailCount == TRAIL_LENGTH)
++    {
++        memmove(&sFollower.trail[0], &sFollower.trail[1], (TRAIL_LENGTH - 1) * sizeof(sFollower.trail[0]));
++        sFollower.trailCount--;
++    }
++    sFollower.trail[sFollower.trailCount].x = fromX;
++    sFollower.trail[sFollower.trailCount].y = fromY;
++    sFollower.trail[sFollower.trailCount].kind = kind;
++    sFollower.trailCount++;
++
++    // Sprites are updated in order; if the follower's has been already, give
++    // it this frame's update now so it keeps in step with the player.
++    if (FollowTrail(obj) && obj->spriteId < player->spriteId)
++        gSprites[obj->spriteId].callback(&gSprites[obj->spriteId]);
++}
++
++void Follower_Update(void)
++{
++    struct ObjectEvent *obj = GetFollowerObject();
++    struct ObjectEvent *player = GetPlayerObject();
++    struct Pokemon *mon;
++    struct Sprite *sprite;
++    u16 map = CurrentMapId();
++#ifdef PLATFORM_3DS
++    UpdateExtObjPalettes();
++#endif
++
++    if (!player)
++        return;
++
++    // A new map. Coming out of a building, it stays in its Ball until the
++    // player's first step outside (the walk out of the door doesn't count).
++    if (!sFollower.mapKnown || map != sFollower.lastMap)
++    {
++        if (sFollower.mapKnown)
++            sFollower.waitForStep = IsMapTypeIndoors(GetLastUsedWarpMapType()) && !IsMapTypeIndoors(gMapHeader.mapType);
++        sFollower.mapKnown = TRUE;
++        sFollower.lastMap = map;
++        sFollower.recalled = FALSE;
++    }
++    if (sFollower.inCutscene && !ScriptContext_IsEnabled() && !ArePlayerFieldControlsLocked())
++        sFollower.inCutscene = FALSE;
++    if (sFollower.interacting || sFollower.recalled || sFollower.inCutscene)
++        return;
++
++    mon = GetVisibleFollowerMon();
++    if (!mon)
++    {
++        if (obj)
++            RemoveFollower(obj);
++        ClearTrail();
++        return;
++    }
++    if (UpdateGraphics(mon) && obj)
++    {
++        // A different Pokemon (or form) leads now.
++        s16 x = obj->currentCoords.x, y = obj->currentCoords.y;
++        u8 direction = obj->facingDirection;
++        RemoveFollower(obj);
++        obj = ReleaseFollower(x, y, direction);
++    }
++    if (!obj)
++    {
++        ClearTrail();
++        TrySpawnBehindPlayer();
++        return;
++    }
++
++    // Moved off on its own (warped within the map, put on the player's tile
++    // by a script...): it comes back out on the next step.
++    if (!IsMoving(obj) && !IsMoving(player))
++    {
++        s32 distance = abs(obj->currentCoords.x - player->currentCoords.x)
++                     + abs(obj->currentCoords.y - player->currentCoords.y);
++        if (distance == 0 || distance > sFollower.trailCount + 2)
++        {
++            RemoveFollower(obj);
++            return;
++        }
++    }
++
++    FollowTrail(obj);
++
++    // HGSS's walking Pokemon keep stepping while they stand still.
++    sprite = &gSprites[obj->spriteId];
++    if (!IsMoving(obj))
++    {
++        u8 anim = GetFaceDirectionAnimNum(obj->facingDirection);
++        if (sprite->animNum != anim)
++            StartSpriteAnim(sprite, anim);
++        sprite->animPaused = FALSE;
++    }
++}
++
++// ---------------------------------------------------------------------------
++// Talking to it: the emote bubble
++
++#define sTimer data[0]
++#define sObjId data[1]
++
++static void SpriteCB_Emote(struct Sprite *sprite)
++{
++    struct ObjectEvent *obj = &gObjectEvents[sprite->sObjId];
++    struct Sprite *mon = &gSprites[obj->spriteId];
++
++    if (!Follower_IsFollower(obj) || ++sprite->sTimer > 64)
++    {
++        sFollower.emoteSpriteId = MAX_SPRITES;
++        DestroySprite(sprite);
++        return;
++    }
++    sprite->x = mon->x;
++    sprite->y = mon->y + mon->centerToCornerVecY + 4;
++    sprite->x2 = mon->x2;
++    sprite->y2 = mon->y2 + (sprite->sTimer < 4 ? 4 - sprite->sTimer : 0); // pops up
++}
++
++static const struct OamData sOam_Emote = {
++    .shape = SPRITE_SHAPE(16x16),
++    .size = SPRITE_SIZE(16x16),
++    .priority = 1,
++};
++
++static const union AnimCmd sAnim_Emote[] = {
++    ANIMCMD_FRAME(0, 12),
++    ANIMCMD_FRAME(1, 12),
++    ANIMCMD_JUMP(0),
++};
++
++static const union AnimCmd *const sAnims_Emote[] = {sAnim_Emote};
++
++static const struct SpriteTemplate sSpriteTemplate_Emote = {
++    .tileTag = TAG_NONE,
++    .paletteTag = TAG_NONE,
++    .oam = &sOam_Emote,
++    .anims = sAnims_Emote,
++    .images = sEmoteImages,
++    .affineAnims = gDummySpriteAffineAnimTable,
++    .callback = SpriteCB_Emote,
++};
++
++static void ShowEmote(struct ObjectEvent *obj, u8 emote)
++{
++    u32 emotes = PackWord(12);
++    u8 spriteId;
++    int i;
++
++    if (sFollower.emoteSpriteId < MAX_SPRITES)
++    {
++        DestroySprite(&gSprites[sFollower.emoteSpriteId]);
++        sFollower.emoteSpriteId = MAX_SPRITES;
++    }
++    for (i = 0; i < 2; i++)
++    {
++        u32 frame = emote * 2 + i;
++        if (frame >= NUM_EMOTE_FRAMES)
++            frame = NUM_EMOTE_FRAMES - 1;
++        sEmoteImages[i].data = gFollowerPack + emotes + 32 + frame * EMOTE_FRAME_SIZE;
++        sEmoteImages[i].size = EMOTE_FRAME_SIZE;
++    }
++    memcpy(sEmotePalette, gFollowerPack + emotes, sizeof(sEmotePalette));
++    PlatformSetExtObjPalette(EXT_PALETTE_EMOTE, sEmoteImages, sEmotePalette);
++
++    spriteId = CreateSprite(&sSpriteTemplate_Emote, 0, 0, 0);
++    if (spriteId == MAX_SPRITES)
++        return;
++    gSprites[spriteId].coordOffsetEnabled = TRUE;
++    gSprites[spriteId].oam.paletteNum = 0;
++    gSprites[spriteId].sObjId = obj - gObjectEvents;
++    gSprites[spriteId].sTimer = 0;
++    SpriteCB_Emote(&gSprites[spriteId]);
++    sFollower.emoteSpriteId = spriteId;
++}
++
++#undef sTimer
++#undef sObjId
++
++// ---------------------------------------------------------------------------
++// Talking to it: the little animations
++
++static u8 sMotionScript[24];
++
++static void BuildMotion(u8 motion, u8 facing)
++{
++    u8 away = GetOppositeDirection(facing);
++    u8 *s = sMotionScript;
++    int i;
++
++    switch (motion)
++    {
++    case FOLLOWER_MOTION_HOP:
++        *s++ = GetJumpInPlaceMovementAction(facing);
++        *s++ = MOVEMENT_ACTION_DELAY_4;
++        *s++ = GetJumpInPlaceMovementAction(facing);
++        break;
++    case FOLLOWER_MOTION_DANCE:
++        for (i = 0; i < 2; i++)
++        {
++            *s++ = MOVEMENT_ACTION_WALK_IN_PLACE_FAST_UP;
++            *s++ = MOVEMENT_ACTION_WALK_IN_PLACE_FAST_LEFT;
++            *s++ = MOVEMENT_ACTION_WALK_IN_PLACE_FAST_DOWN;
++            *s++ = MOVEMENT_ACTION_WALK_IN_PLACE_FAST_RIGHT;
++        }
++        *s++ = GetJumpInPlaceMovementAction(facing);
++        *s++ = MOVEMENT_ACTION_FACE_PLAYER;
++        break;
++    case FOLLOWER_MOTION_SPIN:
++        for (i = 0; i < 2; i++)
++        {
++            *s++ = MOVEMENT_ACTION_FACE_DOWN;
++            *s++ = MOVEMENT_ACTION_DELAY_4;
++            *s++ = MOVEMENT_ACTION_FACE_LEFT;
++            *s++ = MOVEMENT_ACTION_DELAY_4;
++            *s++ = MOVEMENT_ACTION_FACE_UP;
++            *s++ = MOVEMENT_ACTION_DELAY_4;
++            *s++ = MOVEMENT_ACTION_FACE_RIGHT;
++            *s++ = MOVEMENT_ACTION_DELAY_4;
++        }
++        *s++ = MOVEMENT_ACTION_FACE_PLAYER;
++        break;
++    case FOLLOWER_MOTION_LOOK_AROUND:
++        *s++ = MOVEMENT_ACTION_FACE_AWAY_PLAYER;
++        *s++ = MOVEMENT_ACTION_DELAY_16;
++        *s++ = (facing == DIR_NORTH || facing == DIR_SOUTH) ? MOVEMENT_ACTION_FACE_LEFT : MOVEMENT_ACTION_FACE_UP;
++        *s++ = MOVEMENT_ACTION_DELAY_16;
++        *s++ = (facing == DIR_NORTH || facing == DIR_SOUTH) ? MOVEMENT_ACTION_FACE_RIGHT : MOVEMENT_ACTION_FACE_DOWN;
++        *s++ = MOVEMENT_ACTION_DELAY_16;
++        *s++ = MOVEMENT_ACTION_FACE_PLAYER;
++        break;
++    case FOLLOWER_MOTION_LOOK_AWAY:
++        *s++ = MOVEMENT_ACTION_FACE_AWAY_PLAYER;
++        *s++ = MOVEMENT_ACTION_DELAY_16;
++        break;
++    case FOLLOWER_MOTION_STARTLED:
++        *s++ = MOVEMENT_ACTION_FACE_AWAY_PLAYER;
++        *s++ = MOVEMENT_ACTION_LOCK_FACING_DIRECTION;
++        *s++ = GetJumpInPlaceMovementAction(away);
++        *s++ = MOVEMENT_ACTION_UNLOCK_FACING_DIRECTION;
++        *s++ = MOVEMENT_ACTION_DELAY_8;
++        *s++ = MOVEMENT_ACTION_FACE_PLAYER;
++        break;
++    case FOLLOWER_MOTION_POKE:
++        *s++ = MOVEMENT_ACTION_LOCK_FACING_DIRECTION;
++        for (i = 0; i < 2; i++)
++        {
++            *s++ = GetWalkFasterMovementAction(facing);
++            *s++ = MOVEMENT_ACTION_DELAY_4;
++            *s++ = GetWalkFasterMovementAction(away);
++            *s++ = MOVEMENT_ACTION_DELAY_4;
++        }
++        *s++ = MOVEMENT_ACTION_UNLOCK_FACING_DIRECTION;
++        break;
++    case FOLLOWER_MOTION_CLOSER:
++        *s++ = MOVEMENT_ACTION_LOCK_FACING_DIRECTION;
++        *s++ = GetWalkFastMovementAction(facing);
++        *s++ = MOVEMENT_ACTION_DELAY_16;
++        *s++ = MOVEMENT_ACTION_DELAY_8;
++        *s++ = GetWalkFastMovementAction(away);
++        *s++ = MOVEMENT_ACTION_UNLOCK_FACING_DIRECTION;
++        break;
++    case FOLLOWER_MOTION_POKE_GROUND:
++        *s++ = MOVEMENT_ACTION_FACE_DOWN;
++        for (i = 0; i < 3; i++)
++            *s++ = MOVEMENT_ACTION_WALK_IN_PLACE_FAST_DOWN;
++        *s++ = MOVEMENT_ACTION_FACE_PLAYER;
++        break;
++    case FOLLOWER_MOTION_DIZZY:
++        *s++ = MOVEMENT_ACTION_WALK_IN_PLACE_NORMAL_LEFT;
++        *s++ = MOVEMENT_ACTION_WALK_IN_PLACE_FAST_RIGHT;
++        *s++ = MOVEMENT_ACTION_WALK_IN_PLACE_NORMAL_UP;
++        *s++ = MOVEMENT_ACTION_WALK_IN_PLACE_FAST_DOWN;
++        *s++ = MOVEMENT_ACTION_DELAY_4;
++        *s++ = MOVEMENT_ACTION_FACE_PLAYER;
++        break;
++    case FOLLOWER_MOTION_LOOK_AT:
++        *s++ = GetFaceDirectionMovementAction(sFollower.lookDirection);
++        *s++ = MOVEMENT_ACTION_DELAY_16;
++        break;
++    }
++    *s = MOVEMENT_ACTION_STEP_END;
++}
++
++#define tState  data[0]
++#define tMotion data[1]
++#define tEmote  data[2]
++#define tCry    data[3]
++#define tTimer  data[4]
++
++// Cry, emote and animation, then the script carries on with the message.
++static void Task_FollowerReact(u8 taskId)
++{
++    struct Task *task = &gTasks[taskId];
++    struct ObjectEvent *obj = GetFollowerObject();
++
++    if (!obj)
++    {
++        sFollower.interacting = FALSE;
++        ScriptContext_Enable();
++        DestroyTask(taskId);
++        return;
++    }
++
++    switch (task->tState)
++    {
++    case 0:
++        ShowEmote(obj, task->tEmote);
++        if (task->tCry)
++            PlayCry_Normal(sFollower.species, 0);
++        if (task->tMotion != FOLLOWER_MOTION_NONE && task->tMotion != FOLLOWER_MOTION_SHIVER)
++        {
++            BuildMotion(task->tMotion, obj->facingDirection);
++            ScriptMovement_StartObjectMovementScript(LOCALID_FOLLOWER, obj->mapNum, obj->mapGroup, sMotionScript);
++        }
++        task->tState++;
++        break;
++    case 1:
++        task->tTimer++;
++        if (task->tMotion == FOLLOWER_MOTION_SHIVER)
++            gSprites[obj->spriteId].x2 = (task->tTimer < 40) ? ((task->tTimer >> 1) & 1 ? 1 : -1) : 0;
++        if (task->tMotion != FOLLOWER_MOTION_NONE && task->tMotion != FOLLOWER_MOTION_SHIVER
++         && !ScriptMovement_IsObjectMovementFinished(LOCALID_FOLLOWER, obj->mapNum, obj->mapGroup))
++            break;
++        if (task->tTimer < 40)
++            break;
++        gSprites[obj->spriteId].x2 = 0;
++        sFollower.interacting = FALSE;
++        ScriptContext_Enable();
++        DestroyTask(taskId);
++        break;
++    }
++}
++
++static void StartReaction(u8 emote, u8 motion, bool8 cry)
++{
++    u8 taskId = CreateTask(Task_FollowerReact, 80);
++    gTasks[taskId].tEmote = emote;
++    gTasks[taskId].tMotion = motion;
++    gTasks[taskId].tCry = cry;
++    sFollower.interacting = TRUE;
++}
++
++#undef tState
++#undef tMotion
++#undef tEmote
++#undef tCry
++#undef tTimer
++
++// ---------------------------------------------------------------------------
++// Talking to it: what it says
++
++#define MAX_CANDIDATES 48
++
++static struct FollowerMessage sCandidates[MAX_CANDIDATES];
++static u8 sCandidateCount;
++
++static void AddCandidate(const u8 *text, u8 emote, u8 motion)
++{
++    if (sCandidateCount < MAX_CANDIDATES)
++    {
++        sCandidates[sCandidateCount].text = text;
++        sCandidates[sCandidateCount].emote = emote;
++        sCandidates[sCandidateCount].motion = motion;
++        sCandidateCount++;
++    }
++}
++
++#define ADD(n, emote, motion) AddCandidate(T(n), FOLLOWER_EMOTE_##emote, FOLLOWER_MOTION_##motion)
++
++static bool8 HasType(u16 species, u8 type)
++{
++    return gSpeciesInfo[species].types[0] == type || gSpeciesInfo[species].types[1] == type;
++}
++
++static bool8 IsSpeciesIn(u16 species, const u16 *list, int count)
++{
++    int i;
++    for (i = 0; i < count; i++)
++    {
++        if (list[i] == species)
++            return TRUE;
++    }
++    return FALSE;
++}
++
++#define SPECIES_IN(species, ...) ({ static const u16 list_[] = {__VA_ARGS__}; IsSpeciesIn(species, list_, ARRAY_COUNT(list_)); })
++
++// Looks for a tile within `distance` in a straight line from the follower;
++// remembers which way it is.
++static bool8 IsNear(struct ObjectEvent *obj, bool8 (*isBehavior)(u8), u8 behavior, int distance)
++{
++    static const s8 dirs[4][3] = {{DIR_SOUTH, 0, 1}, {DIR_NORTH, 0, -1}, {DIR_WEST, -1, 0}, {DIR_EAST, 1, 0}};
++    int d, i;
++    for (d = 0; d < 4; d++)
++    {
++        for (i = 1; i <= distance; i++)
++        {
++            u8 mb = MapGridGetMetatileBehaviorAt(obj->currentCoords.x + dirs[d][1] * i, obj->currentCoords.y + dirs[d][2] * i);
++            if (isBehavior ? isBehavior(mb) : mb == behavior)
++            {
++                sFollower.lookDirection = dirs[d][0];
++                return TRUE;
++            }
++        }
++    }
++    return FALSE;
++}
++
++// How well a Pokemon of these types takes hits of attackType (10 = normally).
++static int TypeEffectiveness(u16 species, u8 attackType)
++{
++    int i, result = 10;
++    for (i = 0; TYPE_EFFECT_ATK_TYPE(i) != TYPE_ENDTABLE; i += 3)
++    {
++        if (TYPE_EFFECT_ATK_TYPE(i) == TYPE_FORESIGHT)
++            break;
++        if (TYPE_EFFECT_ATK_TYPE(i) != attackType)
++            continue;
++        if (TYPE_EFFECT_DEF_TYPE(i) == gSpeciesInfo[species].types[0])
++            result = result * TYPE_EFFECT_MULTIPLIER(i) / 10;
++        if (gSpeciesInfo[species].types[1] != gSpeciesInfo[species].types[0]
++         && TYPE_EFFECT_DEF_TYPE(i) == gSpeciesInfo[species].types[1])
++            result = result * TYPE_EFFECT_MULTIPLIER(i) / 10;
++    }
++    return result;
++}
++
++static u8 GetGymType(void)
++{
++    switch (gMapHeader.regionMapSectionId)
++    {
++    case MAPSEC_RUSTBORO_CITY:   return TYPE_ROCK;
++    case MAPSEC_DEWFORD_TOWN:    return TYPE_FIGHTING;
++    case MAPSEC_MAUVILLE_CITY:   return TYPE_ELECTRIC;
++    case MAPSEC_LAVARIDGE_TOWN:  return TYPE_FIRE;
++    case MAPSEC_PETALBURG_CITY:  return TYPE_NORMAL;
++    case MAPSEC_FORTREE_CITY:    return TYPE_FLYING;
++    case MAPSEC_MOSSDEEP_CITY:   return TYPE_PSYCHIC;
++    case MAPSEC_SOOTOPOLIS_CITY: return TYPE_WATER;
++    }
++    return TYPE_MYSTERY;
++}
++
++// Lines that fit where the Pokemon is and how it is.
++static void GatherConditionalMessages(struct Pokemon *mon, struct ObjectEvent *obj)
++{
++    u16 species = GetMonData(mon, MON_DATA_SPECIES);
++    u32 status = GetMonData(mon, MON_DATA_STATUS);
++    u16 hp = GetMonData(mon, MON_DATA_HP), maxHp = GetMonData(mon, MON_DATA_MAX_HP);
++    u16 heldItem = GetMonData(mon, MON_DATA_HELD_ITEM);
++    u8 weather = GetCurrentWeather();
++    u8 mapType = gMapHeader.mapType;
++    u16 mapSec = gMapHeader.regionMapSectionId;
++    u16 map = CurrentMapId();
++    u16 music = GetCurrentMapMusic();
++    u8 mb = obj->currentMetatileBehavior;
++    bool8 outdoors = IsMapTypeOutdoors(mapType);
++    bool8 rain = weather == WEATHER_RAIN || weather == WEATHER_RAIN_THUNDERSTORM || weather == WEATHER_DOWNPOUR;
++    bool8 clearSky = outdoors && (weather == WEATHER_NONE || weather == WEATHER_SUNNY || weather == WEATHER_SUNNY_CLOUDS);
++    bool8 hot = weather == WEATHER_DROUGHT || mapSec == MAPSEC_FIERY_PATH || mapSec == MAPSEC_MT_CHIMNEY
++             || mapSec == MAPSEC_MAGMA_HIDEOUT;
++
++    sCandidateCount = 0;
++
++    // Health
++    if (maxHp && hp * 4 < maxHp)
++    {
++        ADD(95, SAD, NONE);
++        ADD(359, SAD, NONE);
++        ADD(401, SAD, NONE);
++    }
++    else if (maxHp && hp * 2 < maxHp)
++    {
++        ADD(165, SAD, NONE);
++        ADD(208, SAD, NONE);
++    }
++    if (status & STATUS1_PARALYSIS)
++        ADD(47, SAD, NONE);
++    if (status & STATUS1_BURN)
++        ADD(328, SAD, NONE);
++    if (status & STATUS1_SLEEP)
++    {
++        ADD(403, PENSIVE, NONE);
++        ADD(404, PENSIVE, NONE);
++    }
++    if (status & STATUS1_FREEZE)
++        ADD(628, SAD, NONE);
++
++    // What it's holding
++    if (heldItem != ITEM_NONE)
++    {
++        ADD(9, SURPRISE, NONE);
++        ADD(323, NEUTRAL, NONE);
++        ADD(324, NEUTRAL, NONE);
++        ADD(325, PENSIVE, NONE);
++        ADD(485, MUSIC, DANCE);
++        ADD(603, CURIOUS, NONE);
++    }
++
++    // Weather
++    if (rain && outdoors)
++    {
++        if (HasType(species, TYPE_WATER))
++        {
++            ADD(92, MUSIC, HOP);
++            ADD(93, MUSIC, HOP);
++            ADD(514, HAPPY, NONE);
++            ADD(595, HAPPY, NONE);
++        }
++        else if (HasType(species, TYPE_FIRE))
++        {
++            ADD(194, SAD, NONE);
++            ADD(515, UPSET, NONE);
++            ADD(594, SAD, NONE);
++        }
++        else
++        {
++            ADD(94, SURPRISE, NONE);
++            ADD(593, HAPPY, NONE);
++        }
++        if (MetatileBehavior_IsTallGrass(mb))
++        {
++            ADD(371, UPSET, NONE);
++            ADD(373, MUSIC, NONE);
++        }
++    }
++    if (hot)
++    {
++        if (HasType(species, TYPE_FIRE))
++        {
++            ADD(91, HAPPY, NONE);
++            ADD(452, MUSIC, NONE);
++        }
++        else if (HasType(species, TYPE_ICE))
++        {
++            ADD(89, SAD, NONE);
++            ADD(90, SAD, NONE);
++        }
++        else
++        {
++            ADD(245, SAD, NONE);
++            ADD(453, UPSET, NONE);
++            ADD(549, SAD, NONE);
++        }
++    }
++    if (weather == WEATHER_SUNNY_CLOUDS && outdoors)
++        ADD(459, HAPPY, NONE);
++    if (weather == WEATHER_SANDSTORM)
++        ADD(202, PENSIVE, NONE);
++    if (weather == WEATHER_VOLCANIC_ASH)
++    {
++        ADD(493, CURIOUS, LOOK_AROUND);
++        ADD(580, CURIOUS, LOOK_AROUND);
++    }
++    if (weather == WEATHER_FOG_HORIZONTAL || weather == WEATHER_FOG_DIAGONAL)
++    {
++        ADD(263, CURIOUS, LOOK_AROUND);
++        ADD(310, PENSIVE, LOOK_AROUND);
++    }
++    if (weather == WEATHER_ABNORMAL)
++    {
++        if (SPECIES_IN(species, SPECIES_KYOGRE, SPECIES_GROUDON, SPECIES_RAYQUAZA))
++            ADD(713, ANGRY, NONE);
++        else
++            ADD(256, UPSET, NONE);
++    }
++
++    // Cold
++    if (map == MAP_SHOAL_CAVE_LOW_TIDE_ICE_ROOM)
++    {
++        ADD(548, SURPRISE, NONE);
++        if (HasType(species, TYPE_ICE))
++        {
++            ADD(182, HAPPY, HOP);
++            ADD(184, MUSIC, DANCE);
++            ADD(507, HAPPY, NONE);
++            ADD(524, HAPPY, NONE);
++        }
++        else
++        {
++            ADD(17, LOVE, CLOSER);
++            ADD(183, SAD, NONE);
++            ADD(185, SAD, NONE);
++            ADD(248, UPSET, NONE);
++            ADD(386, SAD, SHIVER);
++            ADD(508, LOVE, CLOSER);
++        }
++    }
++
++    // What it's standing on, or near
++    if (MetatileBehavior_IsTallGrass(mb))
++    {
++        ADD(157, MUSIC, NONE);
++        ADD(159, MUSIC, NONE);
++        ADD(253, SURPRISE, NONE);
++        ADD(254, CURIOUS, NONE);
++        ADD(369, PENSIVE, NONE);
++        ADD(372, MUSIC, SPIN);
++        ADD(375, SURPRISE, STARTLED);
++        ADD(376, PENSIVE, NONE);
++        ADD(377, PENSIVE, NONE);
++        ADD(378, MUSIC, HOP);
++        ADD(379, MUSIC, NONE);
++        if (HasType(species, TYPE_GRASS))
++            ADD(158, HAPPY, POKE_GROUND);
++    }
++    if (MetatileBehavior_IsLongGrass(mb))
++    {
++        ADD(251, MUSIC, NONE);
++        ADD(252, SURPRISE, NONE);
++        ADD(374, SURPRISE, NONE);
++    }
++    if (MetatileBehavior_IsSandOrDeepSand(mb) || MetatileBehavior_IsFootprints(mb))
++    {
++        ADD(250, MUSIC, NONE);
++        ADD(447, MUSIC, NONE);
++        ADD(448, HAPPY, NONE);
++        if (HasType(species, TYPE_GROUND))
++        {
++            ADD(467, HAPPY, POKE_GROUND);
++            ADD(553, HAPPY, POKE_GROUND);
++        }
++    }
++    if (MetatileBehavior_IsPuddle(mb) || MetatileBehavior_IsShallowFlowingWater(mb))
++    {
++        ADD(315, MUSIC, HOP);
++        ADD(316, SURPRISE, NONE);
++        ADD(415, MUSIC, HOP);
++        ADD(565, MUSIC, NONE);
++        ADD(619, SURPRISE, HOP);
++        if (HasType(species, TYPE_FIRE))
++            ADD(450, SAD, NONE);
++        else
++            ADD(451, HAPPY, NONE);
++    }
++    if (IsNear(obj, MetatileBehavior_IsIce, 0, 1))
++    {
++        ADD(172, PENSIVE, LOOK_AT);
++        ADD(173, CURIOUS, LOOK_AT);
++        ADD(389, SURPRISE, NONE);
++        ADD(390, MUSIC, NONE);
++        ADD(502, SURPRISE, NONE);
++    }
++    if (outdoors && IsNear(obj, NULL, MB_OCEAN_WATER, 4))
++    {
++        ADD(113, PENSIVE, LOOK_AT);
++        ADD(114, HAPPY, LOOK_AT);
++        ADD(167, PENSIVE, NONE);
++        ADD(186, HAPPY, NONE);
++        ADD(255, PENSIVE, LOOK_AT);
++        ADD(261, PENSIVE, LOOK_AT);
++        ADD(262, HAPPY, LOOK_AT);
++        ADD(476, PENSIVE, LOOK_AT);
++        if (HasType(species, TYPE_WATER))
++            ADD(556, MUSIC, HOP);
++    }
++    if (IsNear(obj, NULL, MB_POND_WATER, 1))
++    {
++        ADD(192, PENSIVE, LOOK_AT);
++        ADD(193, PENSIVE, LOOK_AT);
++        ADD(360, SURPRISE, STARTLED);
++        ADD(416, PENSIVE, LOOK_AT);
++    }
++    if (IsNear(obj, MetatileBehavior_IsWaterfall, 0, 4))
++    {
++        ADD(221, UPSET, LOOK_AT);
++        ADD(222, PENSIVE, LOOK_AT);
++        ADD(223, CURIOUS, LOOK_AT);
++        ADD(224, CURIOUS, LOOK_AT);
++    }
++
++    // Where it is
++    if (mapType == MAP_TYPE_UNDERGROUND)
++    {
++        ADD(127, PENSIVE, NONE);
++        ADD(160, UPSET, NONE);
++        ADD(161, UPSET, NONE);
++        ADD(241, SURPRISE, NONE);
++        ADD(243, PENSIVE, NONE);
++        ADD(314, SURPRISE, HOP);
++        ADD(547, CURIOUS, NONE);
++    }
++    if (mapSec == MAPSEC_PETALBURG_WOODS)
++    {
++        ADD(122, SURPRISE, NONE);
++        ADD(151, HAPPY, LOOK_AROUND);
++        ADD(178, PENSIVE, NONE);
++        ADD(280, PENSIVE, NONE);
++        ADD(281, PENSIVE, NONE);
++        ADD(282, MUSIC, NONE);
++        ADD(327, CURIOUS, LOOK_AROUND);
++    }
++    if (outdoors && (mapSec == MAPSEC_ROUTE_112 || mapSec == MAPSEC_JAGGED_PASS || mapSec == MAPSEC_MT_CHIMNEY))
++    {
++        ADD(219, PENSIVE, NONE);
++        ADD(220, NEUTRAL, NONE);
++        ADD(329, CURIOUS, NONE);
++        ADD(331, PENSIVE, NONE);
++        ADD(333, NEUTRAL, NONE);
++        ADD(605, PENSIVE, NONE);
++    }
++    if (map == MAP_EVER_GRANDE_CITY)
++        ADD(301, HAPPY, NONE);
++    if (mapSec == MAPSEC_VICTORY_ROAD)
++    {
++        ADD(155, NEUTRAL, NONE);
++        ADD(590, NEUTRAL, NONE);
++    }
++    if (music == MUS_POKE_MART)
++    {
++        ADD(240, CURIOUS, LOOK_AROUND);
++        ADD(466, CURIOUS, LOOK_AROUND);
++        ADD(491, CURIOUS, LOOK_AROUND);
++        ADD(510, PENSIVE, NONE);
++    }
++    if (music == MUS_POKE_CENTER)
++        ADD(384, CURIOUS, LOOK_AROUND);
++    if (map == MAP_MAUVILLE_CITY_BIKE_SHOP)
++    {
++        ADD(190, CURIOUS, NONE);
++        ADD(513, MUSIC, NONE);
++    }
++    if (mapSec == MAPSEC_NEW_MAUVILLE || map == MAP_SLATEPORT_CITY_STERNS_SHIPYARD_1F
++     || map == MAP_SLATEPORT_CITY_STERNS_SHIPYARD_2F || map == MAP_ROUTE119_WEATHER_INSTITUTE_1F
++     || map == MAP_ROUTE119_WEATHER_INSTITUTE_2F)
++    {
++        ADD(140, MUSIC, NONE);
++        ADD(141, CURIOUS, NONE);
++        ADD(142, PENSIVE, NONE);
++        ADD(289, CURIOUS, NONE);
++        ADD(413, CURIOUS, NONE);
++        ADD(730, UPSET, NONE);
++    }
++    if (music == MUS_SAILING || map == MAP_SS_TIDAL_CORRIDOR || map == MAP_SS_TIDAL_LOWER_DECK || map == MAP_SS_TIDAL_ROOMS)
++    {
++        ADD(292, MUSIC, DANCE);
++        ADD(305, HAPPY, NONE);
++        ADD(307, HAPPY, NONE);
++        ADD(347, MUSIC, DANCE);
++    }
++    if (mapSec == MAPSEC_MT_PYRE)
++    {
++        if (HasType(species, TYPE_GHOST))
++        {
++            ADD(226, CURIOUS, LOOK_AROUND);
++            ADD(259, CURIOUS, LOOK_AROUND);
++        }
++        else
++        {
++            ADD(137, UPSET, SHIVER);
++            ADD(181, UPSET, CLOSER);
++            ADD(256, UPSET, NONE);
++            ADD(703, SAD, NONE);
++            ADD(704, UPSET, SHIVER);
++        }
++    }
++    if (mapSec == MAPSEC_SKY_PILLAR)
++    {
++        if (SPECIES_IN(species, SPECIES_RAYQUAZA, SPECIES_KYOGRE, SPECIES_GROUDON))
++        {
++            ADD(479, ANGRY, NONE);
++            ADD(516, ANGRY, NONE);
++        }
++        else if (HasType(species, TYPE_DRAGON))
++        {
++            ADD(230, UPSET, NONE);
++        }
++    }
++    if (map == MAP_LILYCOVE_CITY_DEPARTMENT_STORE_ELEVATOR)
++    {
++        ADD(212, UPSET, NONE);
++        ADD(213, UPSET, NONE);
++        ADD(550, UPSET, NONE);
++        ADD(695, SAD, NONE);
++        ADD(750, UPSET, NONE);
++    }
++    if (map == MAP_ROUTE117_POKEMON_DAY_CARE)
++    {
++        ADD(460, CURIOUS, LOOK_AROUND);
++        ADD(727, MUSIC, NONE);
++    }
++    if (map == MAP_ROUTE117)
++        ADD(555, SURPRISE, NONE);
++    if (mapType == MAP_TYPE_INDOOR && music != MUS_POKE_MART)
++    {
++        ADD(216, CURIOUS, NONE);
++        ADD(217, CURIOUS, POKE);
++        ADD(228, PENSIVE, NONE);
++        ADD(341, PENSIVE, POKE_GROUND);
++    }
++
++    // Gym Leaders' types
++    if (music == MUS_GYM && GetGymType() != TYPE_MYSTERY)
++    {
++        int effect = TypeEffectiveness(species, GetGymType());
++        if (effect > 10)
++        {
++            ADD(205, UPSET, NONE);
++            ADD(233, UPSET, NONE);
++        }
++        else if (effect < 10)
++        {
++            ADD(349, HAPPY, NONE);
++            ADD(155, NEUTRAL, NONE);
++        }
++    }
++
++    // The sky
++    if (clearSky)
++    {
++        RtcCalcLocalTime();
++        if (gLocalTime.hours >= 4 && gLocalTime.hours < 10)
++        {
++            ADD(81, PENSIVE, NONE);
++            ADD(446, HAPPY, NONE);
++        }
++        else if (gLocalTime.hours >= 17 && gLocalTime.hours < 20)
++        {
++            ADD(337, PENSIVE, NONE);
++            ADD(606, HAPPY, NONE);
++        }
++        else if (gLocalTime.hours >= 20 || gLocalTime.hours < 4)
++        {
++            ADD(348, PENSIVE, NONE);
++            ADD(584, HAPPY, NONE);
++            ADD(607, PENSIVE, NONE);
++        }
++        else
++        {
++            ADD(392, PENSIVE, NONE);
++            ADD(393, PENSIVE, NONE);
++            ADD(559, MUSIC, NONE);
++        }
++    }
++
++    // The Pokemon itself
++    if (HasType(species, TYPE_FIRE) && !rain)
++    {
++        ADD(96, NEUTRAL, NONE);
++        ADD(302, ANGRY, NONE);
++        ADD(303, NEUTRAL, NONE);
++        ADD(358, NEUTRAL, NONE);
++        ADD(410, MUSIC, NONE);
++        ADD(411, MUSIC, NONE);
++        ADD(412, NEUTRAL, NONE);
++        ADD(612, HAPPY, NONE);
++    }
++    if (SPECIES_IN(species, SPECIES_CHARMANDER, SPECIES_CHARMELEON, SPECIES_CHARIZARD))
++        ADD(189, HAPPY, NONE);
++    if (HasType(species, TYPE_ELECTRIC))
++    {
++        ADD(135, SURPRISE, NONE);
++        ADD(716, MUSIC, SPIN);
++    }
++    if (HasType(species, TYPE_WATER) && !rain)
++        ADD(317, NEUTRAL, NONE);
++    if (SPECIES_IN(species, SPECIES_CHIKORITA, SPECIES_BAYLEEF, SPECIES_MEGANIUM, SPECIES_ODDISH, SPECIES_GLOOM,
++                   SPECIES_SEEDOT, SPECIES_NUZLEAF, SPECIES_SHIFTRY, SPECIES_LOTAD, SPECIES_TROPIUS, SPECIES_SUNKERN))
++    {
++        ADD(406, NEUTRAL, NONE);
++        ADD(407, MUSIC, NONE);
++        ADD(408, MUSIC, NONE);
++        if (maxHp && hp * 2 < maxHp)
++            ADD(45, SAD, NONE);
++    }
++    if (SPECIES_IN(species, SPECIES_BELLSPROUT, SPECIES_WEEPINBELL, SPECIES_VICTREEBEL, SPECIES_TANGELA))
++    {
++        ADD(238, NEUTRAL, NONE);
++        ADD(239, MUSIC, NONE);
++        ADD(725, MUSIC, SPIN);
++    }
++    if (SPECIES_IN(species, SPECIES_PARAS, SPECIES_PARASECT, SPECIES_SHROOMISH, SPECIES_BRELOOM))
++    {
++        ADD(299, NEUTRAL, NONE);
++        ADD(722, NEUTRAL, NONE);
++    }
++    if (SPECIES_IN(species, SPECIES_KRABBY, SPECIES_KINGLER, SPECIES_CORPHISH, SPECIES_CRAWDAUNT))
++    {
++        ADD(696, MUSIC, DANCE);
++        ADD(697, NEUTRAL, NONE);
++    }
++    if (species == SPECIES_SUDOWOODO)
++    {
++        ADD(692, NEUTRAL, NONE);
++        ADD(693, NEUTRAL, NONE);
++    }
++    if (species == SPECIES_DITTO)
++        ADD(724, CURIOUS, NONE);
++    if (species == SPECIES_CELEBI)
++    {
++        ADD(520, MUSIC, DANCE);
++        ADD(521, MUSIC, DANCE);
++    }
++    if (SPECIES_IN(species, SPECIES_CLEFFA, SPECIES_CLEFAIRY, SPECIES_CLEFABLE, SPECIES_TOGEPI, SPECIES_TOGETIC))
++        ADD(694, MUSIC, DANCE);
++    if (SPECIES_IN(species, SPECIES_EKANS, SPECIES_ARBOK, SPECIES_ONIX, SPECIES_STEELIX, SPECIES_DRATINI,
++                   SPECIES_DRAGONAIR, SPECIES_GYARADOS, SPECIES_SEVIPER, SPECIES_MILOTIC, SPECIES_RAYQUAZA,
++                   SPECIES_HUNTAIL, SPECIES_GOREBYSS))
++        ADD(712, NEUTRAL, NONE);
++    if (SPECIES_IN(species, SPECIES_TYRANITAR, SPECIES_SALAMENCE, SPECIES_ZANGOOSE, SPECIES_SCYTHER,
++                   SPECIES_URSARING, SPECIES_SNEASEL, SPECIES_AERODACTYL, SPECIES_CHARIZARD, SPECIES_AGGRON))
++        ADD(711, ANGRY, NONE);
++    if (SPECIES_IN(species, SPECIES_RAIKOU, SPECIES_ENTEI, SPECIES_SUICUNE, SPECIES_LUGIA, SPECIES_HO_OH,
++                   SPECIES_KYOGRE, SPECIES_GROUDON, SPECIES_REGIROCK, SPECIES_REGICE, SPECIES_REGISTEEL,
++                   SPECIES_MEWTWO, SPECIES_LATIAS, SPECIES_LATIOS))
++    {
++        ADD(714, NEUTRAL, NONE);
++        ADD(715, NEUTRAL, NONE);
++    }
++}
++
++#undef ADD
++
++// How it feels: weights like those of pokeemerald-expansion's recreation,
++// shifted by friendship and by the HGSS mood.
++static u8 ChooseEmotion(struct Pokemon *mon)
++{
++    u8 weights[FOLLOWER_EMOTE_COUNT] = {
++        [FOLLOWER_EMOTE_HAPPY] = 10,
++        [FOLLOWER_EMOTE_NEUTRAL] = 15,
++        [FOLLOWER_EMOTE_SAD] = 5,
++        [FOLLOWER_EMOTE_UPSET] = 15,
++        [FOLLOWER_EMOTE_ANGRY] = 15,
++        [FOLLOWER_EMOTE_PENSIVE] = 15,
++        [FOLLOWER_EMOTE_LOVE] = 0,
++        [FOLLOWER_EMOTE_SURPRISE] = 10,
++        [FOLLOWER_EMOTE_CURIOUS] = 10,
++        [FOLLOWER_EMOTE_MUSIC] = 15,
++        [FOLLOWER_EMOTE_POISONED] = 0,
++    };
++    u8 friendship = GetMonData(mon, MON_DATA_FRIENDSHIP);
++    u16 hp = GetMonData(mon, MON_DATA_HP), maxHp = GetMonData(mon, MON_DATA_MAX_HP);
++    u32 total = 0, roll;
++    int i;
++
++    if (GetMonData(mon, MON_DATA_STATUS) & STATUS1_PSN_ANY)
++        return FOLLOWER_EMOTE_POISONED;
++
++    if (friendship > 80)
++    {
++        weights[FOLLOWER_EMOTE_HAPPY] = 20;
++        weights[FOLLOWER_EMOTE_UPSET] = 5;
++        weights[FOLLOWER_EMOTE_ANGRY] = 5;
++        weights[FOLLOWER_EMOTE_LOVE] = 20;
++        weights[FOLLOWER_EMOTE_MUSIC] = 20;
++    }
++    if (friendship > 170)
++    {
++        weights[FOLLOWER_EMOTE_HAPPY] = 30;
++        weights[FOLLOWER_EMOTE_LOVE] = 30;
++    }
++    if (sFollower.mood > 40)
++    {
++        weights[FOLLOWER_EMOTE_HAPPY] += 15;
++        weights[FOLLOWER_EMOTE_LOVE] += 10;
++        weights[FOLLOWER_EMOTE_MUSIC] += 10;
++        weights[FOLLOWER_EMOTE_SAD] = 0;
++        weights[FOLLOWER_EMOTE_UPSET] = 0;
++        weights[FOLLOWER_EMOTE_ANGRY] = 0;
++    }
++    else if (sFollower.mood < -40)
++    {
++        weights[FOLLOWER_EMOTE_SAD] += 25;
++        weights[FOLLOWER_EMOTE_UPSET] += 10;
++        weights[FOLLOWER_EMOTE_ANGRY] += 10;
++        weights[FOLLOWER_EMOTE_HAPPY] = 5;
++        weights[FOLLOWER_EMOTE_LOVE] = 0;
++        weights[FOLLOWER_EMOTE_MUSIC] = 5;
++    }
++    if (maxHp && hp * 5 < maxHp)
++        weights[FOLLOWER_EMOTE_SAD] = 30;
++
++    for (i = 0; i < FOLLOWER_EMOTE_COUNT; i++)
++        total += weights[i];
++    roll = Random() % total;
++    for (i = 0; i < FOLLOWER_EMOTE_COUNT; i++)
++    {
++        if (roll < weights[i])
++            return i;
++        roll -= weights[i];
++    }
++    return FOLLOWER_EMOTE_NEUTRAL;
++}
++
++// Something it found while walking along.
++static u16 ChooseFoundItem(void)
++{
++    static const u16 sCommon[] = {
++        ITEM_POTION, ITEM_ANTIDOTE, ITEM_PARALYZE_HEAL, ITEM_AWAKENING, ITEM_BURN_HEAL, ITEM_ICE_HEAL,
++        ITEM_POKE_BALL, ITEM_REPEL, ITEM_ESCAPE_ROPE, ITEM_ORAN_BERRY, ITEM_PECHA_BERRY, ITEM_CHERI_BERRY,
++        ITEM_CHESTO_BERRY, ITEM_RAWST_BERRY, ITEM_ASPEAR_BERRY, ITEM_PERSIM_BERRY, ITEM_TINY_MUSHROOM,
++    };
++    static const u16 sUncommon[] = {
++        ITEM_SUPER_POTION, ITEM_GREAT_BALL, ITEM_LEPPA_BERRY, ITEM_SITRUS_BERRY, ITEM_PEARL,
++        ITEM_STARDUST, ITEM_HEART_SCALE, ITEM_BIG_MUSHROOM, ITEM_SUPER_REPEL,
++    };
++    static const u16 sRare[] = {
++        ITEM_HYPER_POTION, ITEM_ULTRA_BALL, ITEM_REVIVE, ITEM_NUGGET, ITEM_STAR_PIECE,
++        ITEM_BIG_PEARL, ITEM_RARE_CANDY, ITEM_PP_UP,
++    };
++    int badges = 0, i;
++    u16 roll = Random() % 100;
++
++    for (i = FLAG_BADGE01_GET; i <= FLAG_BADGE08_GET; i++)
++        badges += FlagGet(i);
++    if (roll < 4 + badges)
++        return sRare[Random() % ARRAY_COUNT(sRare)];
++    if (roll < 25 + badges * 3)
++        return sUncommon[Random() % ARRAY_COUNT(sUncommon)];
++    return sCommon[Random() % ARRAY_COUNT(sCommon)];
++}
++
++static void SetTalkText(const u8 *text)
++{
++    StringExpandPlaceholders(gStringVar4, text);
++}
++
++// Special (waitstate): picks what the follower says (gStringVar4) and how
++// (VAR_RESULT, FOLLOWER_TALK_*), then shows its reaction.
++void FollowerInteract(void)
++{
++    struct ObjectEvent *obj = GetFollowerObject();
++    struct Pokemon *mon = GetFollowerMon();
++    const struct FollowerMessage *message;
++    u8 emotion;
++    u16 heldItem;
++
++    if (!obj || !mon)
++    {
++        gSpecialVar_Result = FOLLOWER_TALK_MESSAGE;
++        gStringVar4[0] = EOS;
++        ScriptContext_Enable();
++        return;
++    }
++
++    GetMonData(mon, MON_DATA_NICKNAME, gStringVar1);
++    StringGet_Nickname(gStringVar1);
++    heldItem = GetMonData(mon, MON_DATA_HELD_ITEM);
++    if (heldItem != ITEM_NONE)
++        CopyItemName(heldItem, gStringVar2);
++    sFollower.question = NULL;
++    sFollower.foundItem = ITEM_NONE;
++
++    // Now and then it has found something along the way.
++    if (sFollower.stepsSinceItem >= 200 && Random() % 5 == 0)
++    {
++        sFollower.stepsSinceItem = 0;
++        sFollower.foundItem = ChooseFoundItem();
++        CopyItemName(sFollower.foundItem, gStringVar2);
++        sFollower.talkKind = FOLLOWER_TALK_ITEM;
++        gSpecialVar_Result = FOLLOWER_TALK_ITEM;
++        SetTalkText(sFoundItemQuestions[Random() % ARRAY_COUNT(sFoundItemQuestions)]);
++        StartReaction(FOLLOWER_EMOTE_SURPRISE, FOLLOWER_MOTION_HOP, TRUE);
++        return;
++    }
++
++    emotion = ChooseEmotion(mon);
++
++    // Sometimes it asks for something.
++    if (emotion != FOLLOWER_EMOTE_POISONED && Random() % 8 == 0)
++    {
++        u8 matches[ARRAY_COUNT(sQuestions)], count = 0;
++        int i;
++        for (i = 0; i < (int)ARRAY_COUNT(sQuestions); i++)
++        {
++            if (sQuestions[i].askEmotions & (1 << emotion))
++                matches[count++] = i;
++        }
++        if (count)
++        {
++            sFollower.question = &sQuestions[matches[Random() % count]];
++            sFollower.talkKind = FOLLOWER_TALK_QUESTION;
++            gSpecialVar_Result = FOLLOWER_TALK_QUESTION;
++            SetTalkText(sFollower.question->question);
++            StartReaction(sFollower.question->emote, FOLLOWER_MOTION_NONE, TRUE);
++            return;
++        }
++    }
++
++    // Something about where it is or how it is (more often the more there is
++    // to say, up to half the time), otherwise a line for how it feels.
++    GatherConditionalMessages(mon, obj);
++    if (emotion != FOLLOWER_EMOTE_POISONED && sCandidateCount
++     && Random() % (sCandidateCount + 8) < min(sCandidateCount, 8))
++        message = &sCandidates[Random() % sCandidateCount];
++    else
++        message = &sMessagePools[emotion].messages[Random() % sMessagePools[emotion].count];
++
++    sFollower.talkKind = FOLLOWER_TALK_MESSAGE;
++    gSpecialVar_Result = FOLLOWER_TALK_MESSAGE;
++    SetTalkText(message->text);
++    StartReaction(message->emote, message->motion, TRUE);
++}
++
++// Special (waitstate), after a Yes/No: VAR_RESULT is the answer. For a found
++// item, leaves VAR_RESULT TRUE (and the item in VAR_0x8004) if it's to be
++// given.
++void FollowerAnswer(void)
++{
++    struct Pokemon *mon = GetFollowerMon();
++    bool8 yes = gSpecialVar_Result == 1; // YES
++
++    if (!mon || !GetFollowerObject())
++    {
++        gSpecialVar_Result = FALSE;
++        gStringVar4[0] = EOS;
++        ScriptContext_Enable();
++        return;
++    }
++
++    if (sFollower.talkKind == FOLLOWER_TALK_ITEM)
++    {
++        gSpecialVar_Result = FALSE;
++        if (!yes)
++        {
++            SetTalkText(sFoundItemKept);
++            StartReaction(FOLLOWER_EMOTE_HAPPY, FOLLOWER_MOTION_NONE, FALSE);
++        }
++        else if (!CheckBagHasSpace(sFollower.foundItem, 1))
++        {
++            SetTalkText(sFoundItemNoRoom);
++            StartReaction(FOLLOWER_EMOTE_ANGRY, FOLLOWER_MOTION_LOOK_AWAY, FALSE);
++        }
++        else
++        {
++            SetTalkText(sFoundItemTaken);
++            StartReaction(FOLLOWER_EMOTE_HAPPY, FOLLOWER_MOTION_HOP, FALSE);
++            gSpecialVar_0x8004 = sFollower.foundItem;
++            gSpecialVar_Result = TRUE;
++        }
++        return;
++    }
++
++    if (sFollower.question)
++    {
++        const struct FollowerQuestion *q = sFollower.question;
++        gSpecialVar_Result = FALSE;
++        if (yes)
++        {
++            AddMood(q->yesMood);
++            // Petting it and the like: a little friendship, at most once
++            // every so often.
++            if (q->yesFriendly && sFollower.stepsSinceFriendship >= 128)
++            {
++                u8 friendship = GetMonData(mon, MON_DATA_FRIENDSHIP);
++                sFollower.stepsSinceFriendship = 0;
++                if (friendship < MAX_FRIENDSHIP)
++                {
++                    friendship++;
++                    SetMonData(mon, MON_DATA_FRIENDSHIP, &friendship);
++                }
++            }
++            SetTalkText(q->yes);
++            StartReaction(q->yesEmote, q->yesEmote == FOLLOWER_EMOTE_MUSIC ? FOLLOWER_MOTION_HOP : FOLLOWER_MOTION_NONE, FALSE);
++        }
++        else
++        {
++            AddMood(q->noMood);
++            SetTalkText(q->no);
++            StartReaction(q->noEmote, FOLLOWER_MOTION_NONE, FALSE);
++        }
++        return;
++    }
++
++    gSpecialVar_Result = FALSE;
++    gStringVar4[0] = EOS;
++    ScriptContext_Enable();
++}
++
++#endif // PLATFORM_3DS
+--- a/include/follower.h
++++ b/include/follower.h
+@@ -0,0 +1,83 @@
++#ifndef GUARD_FOLLOWER_H
++#define GUARD_FOLLOWER_H
++
++// HGSS-style following Pokemon (PC port only, src/follower.c).
++
++#ifdef PLATFORM_3DS
++
++#define LOCALID_FOLLOWER 254
++#define OBJ_EVENT_GFX_FOLLOWER NUM_OBJ_EVENT_GFX // the one id below the dynamic ones no graphics use
++
++// How the player started a step (passed to Follower_OnPlayerStep). The first
++// five are event_object_movement.c's MOVE_SPEED_* values.
++#define FOLLOWER_STEP_NORMAL  0 // walking
++#define FOLLOWER_STEP_FAST    1 // running, sliding on ice
++#define FOLLOWER_STEP_FAST_2  2
++#define FOLLOWER_STEP_FASTER  3
++#define FOLLOWER_STEP_FASTEST 4
++#define FOLLOWER_STEP_SLOW  10
++#define FOLLOWER_STEP_JUMP  11 // a one-tile jump
++#define FOLLOWER_STEP_JUMP2 12 // a ledge jump (two tiles)
++
++// Emote bubbles, in the order they're drawn in graphics/pokemon_followers/emotes.png.
++enum
++{
++    FOLLOWER_EMOTE_HAPPY,
++    FOLLOWER_EMOTE_NEUTRAL,
++    FOLLOWER_EMOTE_SAD,
++    FOLLOWER_EMOTE_UPSET,
++    FOLLOWER_EMOTE_ANGRY,
++    FOLLOWER_EMOTE_PENSIVE,
++    FOLLOWER_EMOTE_LOVE,
++    FOLLOWER_EMOTE_SURPRISE,
++    FOLLOWER_EMOTE_CURIOUS,
++    FOLLOWER_EMOTE_MUSIC,
++    FOLLOWER_EMOTE_POISONED,
++    FOLLOWER_EMOTE_COUNT
++};
++
++// What the follower does while it talks.
++enum
++{
++    FOLLOWER_MOTION_NONE,
++    FOLLOWER_MOTION_HOP,
++    FOLLOWER_MOTION_DANCE,
++    FOLLOWER_MOTION_SPIN,
++    FOLLOWER_MOTION_LOOK_AROUND,
++    FOLLOWER_MOTION_LOOK_AWAY,
++    FOLLOWER_MOTION_STARTLED,
++    FOLLOWER_MOTION_POKE,
++    FOLLOWER_MOTION_CLOSER,
++    FOLLOWER_MOTION_POKE_GROUND,
++    FOLLOWER_MOTION_SHIVER,
++    FOLLOWER_MOTION_DIZZY,
++    FOLLOWER_MOTION_LOOK_AT, // towards what it noticed
++};
++
++// Kinds of interaction (VAR_RESULT after the FollowerInteract special).
++#define FOLLOWER_TALK_MESSAGE  0
++#define FOLLOWER_TALK_QUESTION 1
++#define FOLLOWER_TALK_ITEM     2
++
++struct ObjectEvent;
++struct ObjectEventGraphicsInfo;
++struct Pokemon;
++
++void Follower_Update(void); // once per overworld frame, before sprites are updated
++void Follower_OnPlayerStep(s16 fromX, s16 fromY, u8 kind);
++void Follower_OnPlayerStepTaken(void); // a step counted by the step counters
++void Follower_ShiftCoords(s16 dx, s16 dy); // the map changed under the camera
++void Follower_OnWarpStart(void); // a warp is starting (sWarpDestination is set)
++void Follower_OnObjectStep(const struct ObjectEvent *mover, s16 x, s16 y); // someone starts a step to (x, y)
++bool8 Follower_IsFollower(const struct ObjectEvent *objectEvent);
++bool8 Follower_YieldObjectSlot(void);
++const struct ObjectEventGraphicsInfo *Follower_GetGraphicsInfo(void);
++const u8 *Follower_GetScript(void);
++
++// HGSS's mood: a hidden -127..127 value for the walking Pokemon.
++void Follower_OnFriendshipEvent(struct Pokemon *mon, u8 event);
++void Follower_OnItemUsed(struct Pokemon *mon, u16 item);
++
++#endif // PLATFORM_3DS
++
++#endif // GUARD_FOLLOWER_H
+--- a/src/data/follower_messages.h
++++ b/src/data/follower_messages.h
+@@ -0,0 +1,277 @@
++// What the following Pokemon says when talked to (src/follower.c).
++//
++// The text is HGSS's own (pret/pokeheartgold's msg_0265.gmm, converted into
++// follower_text.h by tools/followers/followers.py text); T(n) is line n of
++// that bank. How a line is chosen isn't decompiled yet (the interaction runs
++// in native code), so the pools and conditions below are a recreation.
++
++#define MSG(n, emote, motion) {T(n), FOLLOWER_EMOTE_##emote, FOLLOWER_MOTION_##motion}
++
++static const struct FollowerMessage sHappyMessages[] = {
++    MSG(18,  HAPPY, NONE),
++    MSG(21,  HAPPY, NONE),
++    MSG(22,  HAPPY, HOP),
++    MSG(24,  HAPPY, NONE),
++    MSG(52,  HAPPY, HOP),
++    MSG(54,  HAPPY, NONE),
++    MSG(55,  HAPPY, NONE),
++    MSG(56,  HAPPY, NONE),
++    MSG(59,  HAPPY, NONE),
++    MSG(61,  HAPPY, HOP),
++    MSG(62,  HAPPY, NONE),
++    MSG(69,  HAPPY, NONE),
++    MSG(109, HAPPY, NONE),
++    MSG(115, HAPPY, DANCE),
++    MSG(117, HAPPY, NONE),
++    MSG(119, HAPPY, HOP),
++    MSG(169, HAPPY, NONE),
++    MSG(170, HAPPY, NONE),
++    MSG(171, HAPPY, HOP),
++    MSG(176, HAPPY, NONE),
++    MSG(206, HAPPY, NONE),
++    MSG(249, HAPPY, NONE),
++    MSG(264, HAPPY, NONE),
++    MSG(270, HAPPY, NONE),
++    MSG(272, HAPPY, NONE),
++    MSG(306, HAPPY, NONE),
++    MSG(334, HAPPY, NONE),
++    MSG(354, HAPPY, NONE),
++    MSG(362, HAPPY, NONE),
++    MSG(385, HAPPY, NONE),
++    MSG(397, HAPPY, HOP),
++    MSG(477, HAPPY, NONE),
++    MSG(500, HAPPY, NONE),
++    MSG(552, HAPPY, NONE),
++    MSG(720, HAPPY, NONE),
++    MSG(732, HAPPY, NONE),
++};
++
++static const struct FollowerMessage sNeutralMessages[] = {
++    MSG(5,   NEUTRAL, NONE),
++    MSG(28,  NEUTRAL, LOOK_AROUND),
++    MSG(34,  NEUTRAL, NONE),
++    MSG(38,  NEUTRAL, NONE),
++    MSG(48,  NEUTRAL, NONE),
++    MSG(58,  NEUTRAL, NONE),
++    MSG(65,  NEUTRAL, NONE),
++    MSG(68,  NEUTRAL, NONE),
++    MSG(147, NEUTRAL, LOOK_AROUND),
++    MSG(148, NEUTRAL, LOOK_AROUND),
++    MSG(150, NEUTRAL, LOOK_AROUND),
++    MSG(153, NEUTRAL, LOOK_AROUND),
++    MSG(168, NEUTRAL, NONE),
++    MSG(175, NEUTRAL, NONE),
++    MSG(177, NEUTRAL, NONE),
++    MSG(343, NEUTRAL, NONE),
++    MSG(353, NEUTRAL, NONE),
++    MSG(356, NEUTRAL, LOOK_AROUND),
++    MSG(400, NEUTRAL, LOOK_AWAY),
++    MSG(718, NEUTRAL, NONE),
++    MSG(719, NEUTRAL, NONE),
++    MSG(755, NEUTRAL, NONE),
++    MSG(756, NEUTRAL, NONE),
++};
++
++static const struct FollowerMessage sSadMessages[] = {
++    MSG(15,  SAD, NONE),
++    MSG(207, SAD, NONE),
++    MSG(208, SAD, NONE),
++    MSG(232, SAD, NONE),
++    MSG(293, SAD, DIZZY),
++    MSG(523, SAD, NONE),
++    MSG(703, SAD, NONE),
++};
++
++static const struct FollowerMessage sUpsetMessages[] = {
++    MSG(66,  UPSET, LOOK_AWAY),
++    MSG(203, UPSET, NONE),
++    MSG(205, UPSET, NONE),
++    MSG(230, UPSET, NONE),
++    MSG(233, UPSET, NONE),
++    MSG(266, UPSET, NONE),
++    MSG(388, UPSET, NONE),
++    MSG(551, UPSET, LOOK_AWAY),
++};
++
++static const struct FollowerMessage sAngryMessages[] = {
++    MSG(13,  ANGRY, NONE),
++    MSG(97,  ANGRY, NONE),
++    MSG(98,  ANGRY, NONE),
++    MSG(111, ANGRY, NONE),
++    MSG(265, ANGRY, NONE),
++    MSG(465, ANGRY, NONE),
++    MSG(557, ANGRY, NONE),
++    MSG(576, ANGRY, LOOK_AWAY),
++};
++
++static const struct FollowerMessage sPensiveMessages[] = {
++    MSG(87,  PENSIVE, LOOK_AROUND),
++    MSG(88,  PENSIVE, LOOK_AROUND),
++    MSG(195, PENSIVE, POKE_GROUND),
++    MSG(196, PENSIVE, POKE_GROUND),
++    MSG(197, PENSIVE, NONE),
++    MSG(198, PENSIVE, POKE_GROUND),
++    MSG(273, PENSIVE, NONE),
++    MSG(312, PENSIVE, LOOK_AROUND),
++    MSG(321, PENSIVE, NONE),
++    MSG(322, PENSIVE, NONE),
++    MSG(344, PENSIVE, NONE),
++    MSG(350, PENSIVE, NONE),
++    MSG(394, PENSIVE, LOOK_AWAY),
++    MSG(402, PENSIVE, NONE),
++    MSG(487, PENSIVE, NONE),
++    MSG(488, PENSIVE, NONE),
++    MSG(541, PENSIVE, LOOK_AWAY),
++    MSG(705, PENSIVE, NONE),
++    MSG(728, PENSIVE, NONE),
++    MSG(757, PENSIVE, NONE),
++};
++
++static const struct FollowerMessage sLoveMessages[] = {
++    MSG(12,  LOVE, NONE),
++    MSG(20,  LOVE, NONE),
++    MSG(43,  LOVE, CLOSER),
++    MSG(46,  LOVE, NONE),
++    MSG(50,  LOVE, NONE),
++    MSG(53,  LOVE, CLOSER),
++    MSG(132, LOVE, POKE),
++    MSG(351, LOVE, CLOSER),
++    MSG(364, LOVE, POKE),
++    MSG(457, LOVE, NONE),
++    MSG(614, LOVE, CLOSER),
++    MSG(615, LOVE, HOP),
++};
++
++static const struct FollowerMessage sSurpriseMessages[] = {
++    MSG(14,  SURPRISE, HOP),
++    MSG(30,  SURPRISE, POKE),
++    MSG(99,  SURPRISE, STARTLED),
++    MSG(100, SURPRISE, STARTLED),
++    MSG(136, SURPRISE, NONE),
++    MSG(202, SURPRISE, NONE),
++    MSG(210, SURPRISE, NONE),
++    MSG(211, SURPRISE, POKE),
++    MSG(226, SURPRISE, LOOK_AROUND),
++    MSG(257, SURPRISE, STARTLED),
++    MSG(258, SURPRISE, STARTLED),
++    MSG(352, SURPRISE, POKE),
++    MSG(357, SURPRISE, NONE),
++    MSG(398, SURPRISE, NONE),
++    MSG(399, SURPRISE, NONE),
++    MSG(462, SURPRISE, HOP),
++    MSG(525, SURPRISE, NONE),
++    MSG(527, SURPRISE, NONE),
++    MSG(569, SURPRISE, HOP),
++    MSG(721, SURPRISE, NONE),
++};
++
++static const struct FollowerMessage sCuriousMessages[] = {
++    MSG(6,   CURIOUS, NONE),
++    MSG(7,   CURIOUS, NONE),
++    MSG(11,  CURIOUS, LOOK_AROUND),
++    MSG(104, CURIOUS, POKE_GROUND),
++    MSG(105, CURIOUS, LOOK_AROUND),
++    MSG(149, CURIOUS, LOOK_AROUND),
++    MSG(174, CURIOUS, POKE_GROUND),
++    MSG(236, CURIOUS, NONE),
++    MSG(259, CURIOUS, LOOK_AROUND),
++    MSG(271, CURIOUS, NONE),
++    MSG(490, CURIOUS, LOOK_AROUND),
++    MSG(496, CURIOUS, LOOK_AROUND),
++    MSG(585, CURIOUS, POKE),
++};
++
++static const struct FollowerMessage sMusicMessages[] = {
++    MSG(49,  MUSIC, HOP),
++    MSG(57,  MUSIC, SPIN),
++    MSG(60,  MUSIC, DANCE),
++    MSG(63,  MUSIC, HOP),
++    MSG(64,  MUSIC, HOP),
++    MSG(145, MUSIC, DANCE),
++    MSG(166, MUSIC, SPIN),
++    MSG(209, MUSIC, DANCE),
++    MSG(225, MUSIC, NONE),
++    MSG(231, MUSIC, NONE),
++    MSG(287, MUSIC, HOP),
++    MSG(458, MUSIC, SPIN),
++    MSG(518, MUSIC, DANCE),
++    MSG(537, MUSIC, NONE),
++    MSG(554, MUSIC, NONE),
++    MSG(558, MUSIC, DANCE),
++    MSG(701, MUSIC, HOP),
++    MSG(706, MUSIC, HOP),
++    MSG(717, MUSIC, DANCE),
++    MSG(727, MUSIC, NONE),
++};
++
++static const struct FollowerMessage sPoisonedMessages[] = {
++    MSG(395, POISONED, SHIVER),
++};
++
++static const struct
++{
++    const struct FollowerMessage *messages;
++    u8 count;
++} sMessagePools[FOLLOWER_EMOTE_COUNT] = {
++    [FOLLOWER_EMOTE_HAPPY]    = {sHappyMessages,    ARRAY_COUNT(sHappyMessages)},
++    [FOLLOWER_EMOTE_NEUTRAL]  = {sNeutralMessages,  ARRAY_COUNT(sNeutralMessages)},
++    [FOLLOWER_EMOTE_SAD]      = {sSadMessages,      ARRAY_COUNT(sSadMessages)},
++    [FOLLOWER_EMOTE_UPSET]    = {sUpsetMessages,    ARRAY_COUNT(sUpsetMessages)},
++    [FOLLOWER_EMOTE_ANGRY]    = {sAngryMessages,    ARRAY_COUNT(sAngryMessages)},
++    [FOLLOWER_EMOTE_PENSIVE]  = {sPensiveMessages,  ARRAY_COUNT(sPensiveMessages)},
++    [FOLLOWER_EMOTE_LOVE]     = {sLoveMessages,     ARRAY_COUNT(sLoveMessages)},
++    [FOLLOWER_EMOTE_SURPRISE] = {sSurpriseMessages, ARRAY_COUNT(sSurpriseMessages)},
++    [FOLLOWER_EMOTE_CURIOUS]  = {sCuriousMessages,  ARRAY_COUNT(sCuriousMessages)},
++    [FOLLOWER_EMOTE_MUSIC]    = {sMusicMessages,    ARRAY_COUNT(sMusicMessages)},
++    [FOLLOWER_EMOTE_POISONED] = {sPoisonedMessages, ARRAY_COUNT(sPoisonedMessages)},
++};
++
++// Questions the Pokemon asks with a Yes/No prompt, and what follows each
++// answer. Mood changes as HGSS's follower scripts do (ScrCmd_732); answers
++// marked `friendly` also raise friendship a little (see FollowerAnswer).
++struct FollowerQuestion
++{
++    const u8 *question;
++    u8 emote;
++    u8 askEmotions; // bit mask of the moods it comes up in
++    const u8 *yes;
++    u8 yesEmote;
++    s8 yesMood;
++    bool8 yesFriendly;
++    const u8 *no;
++    u8 noEmote;
++    s8 noMood;
++};
++
++#define EMO(e) (1 << FOLLOWER_EMOTE_##e)
++#define Q(n, e, when, y, ye, ym, yf, no, ne, nm) \
++    {T(n), FOLLOWER_EMOTE_##e, when, T(y), FOLLOWER_EMOTE_##ye, ym, yf, T(no), FOLLOWER_EMOTE_##ne, nm}
++
++static const struct FollowerQuestion sQuestions[] = {
++    Q(10,  HAPPY,    EMO(HAPPY) | EMO(MUSIC),    643, MUSIC,    10, TRUE,  644, UPSET,  -10),
++    Q(25,  UPSET,    EMO(UPSET) | EMO(SAD),      645, HAPPY,    10, TRUE,  649, SAD,     -5),
++    Q(27,  LOVE,     EMO(LOVE) | EMO(HAPPY),     641, LOVE,     15, TRUE,  670, SAD,    -10),
++    Q(31,  MUSIC,    EMO(MUSIC) | EMO(HAPPY),    681, MUSIC,    15, TRUE,  624, PENSIVE, -5),
++    Q(32,  ANGRY,    EMO(ANGRY),                 684, SAD,      -5, FALSE, 652, HAPPY,    5),
++    Q(33,  PENSIVE,  EMO(PENSIVE),               635, SURPRISE,  0, FALSE, 636, PENSIVE,  0),
++    Q(35,  MUSIC,    EMO(MUSIC),                 637, HAPPY,    10, TRUE,  642, PENSIVE, -5),
++    Q(36,  LOVE,     EMO(LOVE),                  639, LOVE,     15, TRUE,  640, SAD,    -10),
++    Q(37,  NEUTRAL,  EMO(NEUTRAL) | EMO(PENSIVE),680, HAPPY,     5, FALSE, 642, PENSIVE,  0),
++    Q(39,  MUSIC,    EMO(MUSIC) | EMO(LOVE),     679, MUSIC,    10, TRUE,  644, UPSET,  -10),
++    Q(40,  UPSET,    EMO(UPSET),                 645, HAPPY,    10, TRUE,  653, SAD,    -10),
++    Q(41,  PENSIVE,  EMO(PENSIVE) | EMO(NEUTRAL),651, SURPRISE,  0, FALSE, 655, PENSIVE,  0),
++    Q(44,  CURIOUS,  EMO(CURIOUS) | EMO(ANGRY),  661, SAD,      -5, FALSE, 650, HAPPY,    5),
++    Q(67,  CURIOUS,  EMO(CURIOUS),               684, SAD,      -5, FALSE, 652, MUSIC,    5),
++    Q(84,  ANGRY,    EMO(ANGRY),                 632, SAD,     -10, FALSE, 656, LOVE,     5),
++    Q(85,  ANGRY,    EMO(ANGRY) | EMO(UPSET),    684, SAD,     -10, FALSE, 652, HAPPY,    5),
++    Q(618, LOVE,     EMO(LOVE) | EMO(HAPPY),     631, LOVE,     15, TRUE,  625, SAD,    -10),
++};
++
++#undef Q
++#undef EMO
++
++// Finding an item.
++static const u8 *const sFoundItemQuestions[] = {T(0), T(16)};
++#define sFoundItemTaken        T(3)
++#define sFoundItemKept         T(1)
++#define sFoundItemNoRoom       T(2)
+--- a/src/data/follower_text.h
++++ b/src/data/follower_text.h
+@@ -0,0 +1,423 @@
++// HGSS's walking Pokemon text (msg_0265.gmm from pret/pokeheartgold), as
++// Emerald text. Generated by tools/followers/followers.py text; T(n) is
++// line n of the bank.
++
++static const u8 sFollowerText_0[] = _("Huh?\n{STR_VAR_1} is holding something...\lWould you like to take it?");
++static const u8 sFollowerText_1[] = _("{STR_VAR_1} seems happy to have found\nsomething!");
++static const u8 sFollowerText_2[] = _("Oh!\nIt seems just too important to let go!");
++static const u8 sFollowerText_3[] = _("{STR_VAR_1} happily handed it over!");
++static const u8 sFollowerText_5[] = _("It's facing this way and nodding.");
++static const u8 sFollowerText_6[] = _("A strange sound is coming from\n{STR_VAR_1}...");
++static const u8 sFollowerText_7[] = _("{STR_VAR_1} is growling in a way that\nsounds almost like speech...");
++static const u8 sFollowerText_9[] = _("{STR_VAR_1} almost forgot that it was\nholding that {STR_VAR_2}!");
++static const u8 sFollowerText_10[] = _("{STR_VAR_1} nudged {PLAYER}!\pNudge it back?");
++static const u8 sFollowerText_11[] = _("{STR_VAR_1} is touching things\nall over the place...");
++static const u8 sFollowerText_12[] = _("{STR_VAR_1} is keeping close to your\nfeet.");
++static const u8 sFollowerText_13[] = _("{STR_VAR_1} suddenly flew into a rage!");
++static const u8 sFollowerText_14[] = _("{STR_VAR_1} jumped in surprise!");
++static const u8 sFollowerText_15[] = _("{STR_VAR_1} looks a little\ndownhearted...");
++static const u8 sFollowerText_16[] = _("{STR_VAR_1} is heading this way with\nsomething in its mouth.\pTake the item out of its mouth?");
++static const u8 sFollowerText_17[] = _("{STR_VAR_1} is snuggling up, shivering\nwith cold!");
++static const u8 sFollowerText_18[] = _("{STR_VAR_1} is really happy!");
++static const u8 sFollowerText_20[] = _("{STR_VAR_1} seems very happy to be\nso close!");
++static const u8 sFollowerText_21[] = _("{STR_VAR_1} just looks so very happy!");
++static const u8 sFollowerText_22[] = _("{STR_VAR_1} is very excited!");
++static const u8 sFollowerText_24[] = _("{STR_VAR_1} is very happy!");
++static const u8 sFollowerText_25[] = _("{STR_VAR_1} seems to be a bit\nnervous...\pWould you like to say something?");
++static const u8 sFollowerText_27[] = _("{STR_VAR_1} is following you very\nclosely!\pWant to give it a pat?");
++static const u8 sFollowerText_28[] = _("{STR_VAR_1} is paying close attention\nto its surroundings!");
++static const u8 sFollowerText_30[] = _("{STR_VAR_1} was not paying attention\nand ran headfirst into you!");
++static const u8 sFollowerText_31[] = _("{STR_VAR_1} seems to want to play and\nis gazing at you expectantly.\pWill you give in?");
++static const u8 sFollowerText_32[] = _("{STR_VAR_1} suddenly pushed you!\nWill you scold it?");
++static const u8 sFollowerText_33[] = _("{STR_VAR_1} seems to be nodding\noff... Call out its name?");
++static const u8 sFollowerText_34[] = _("{STR_VAR_1} is facing you with a\nblank expression.");
++static const u8 sFollowerText_35[] = _("{STR_VAR_1} is rolling around in a\nthicket, and there are\pleaves all over! Prop it up?");
++static const u8 sFollowerText_36[] = _("{STR_VAR_1} suddenly got very close\nto you!\pWant to show it some affection?");
++static const u8 sFollowerText_37[] = _("{STR_VAR_1} is blankly staring in this\ndirection...\pWant to call its name?");
++static const u8 sFollowerText_38[] = _("{STR_VAR_1} looks like it wants to\nlead!");
++static const u8 sFollowerText_39[] = _("{STR_VAR_1} wants attention now!\nWant to play along?");
++static const u8 sFollowerText_40[] = _("{STR_VAR_1} seems a bit uneasy and\nis shuffling around nervously.\pSay something reassuring?");
++static const u8 sFollowerText_41[] = _("{STR_VAR_1} seems to be lost in a\ndaydream.\pCall out to it?");
++static const u8 sFollowerText_43[] = _("{STR_VAR_1} suddenly started walking\ncloser!");
++static const u8 sFollowerText_44[] = _("{STR_VAR_1} is chewing on\nyour shoes! Scold it?");
++static const u8 sFollowerText_45[] = _("{STR_VAR_1}'s leaf is drooping\nslightly.");
++static const u8 sFollowerText_46[] = _("{STR_VAR_1}'s cheeks are becoming\nrosy!");
++static const u8 sFollowerText_47[] = _("{STR_VAR_1} seems to be having\ndifficulty moving its body!");
++static const u8 sFollowerText_48[] = _("{STR_VAR_1} is steadily keeping up\nwith you!");
++static const u8 sFollowerText_49[] = _("{STR_VAR_1} seems to want to play with\n{PLAYER}!");
++static const u8 sFollowerText_50[] = _("{STR_VAR_1} is regarding you with\nadoration!");
++static const u8 sFollowerText_52[] = _("{STR_VAR_1} is jumping for joy!");
++static const u8 sFollowerText_53[] = _("{STR_VAR_1} is happily cuddling up to\nyou!");
++static const u8 sFollowerText_54[] = _("{STR_VAR_1} looks very happy!");
++static const u8 sFollowerText_55[] = _("{STR_VAR_1} seems to be feeling great\nabout walking with you!");
++static const u8 sFollowerText_56[] = _("{STR_VAR_1} put in extra effort!");
++static const u8 sFollowerText_57[] = _("{STR_VAR_1} spun around in a circle!");
++static const u8 sFollowerText_58[] = _("{STR_VAR_1} is focusing its attention\non you.");
++static const u8 sFollowerText_59[] = _("{STR_VAR_1} turned to face you\nand smiled!");
++static const u8 sFollowerText_60[] = _("{STR_VAR_1} is showing off its\nagility!");
++static const u8 sFollowerText_61[] = _("{STR_VAR_1} is happily skipping about!");
++static const u8 sFollowerText_62[] = _("{STR_VAR_1} seems to be very happy!");
++static const u8 sFollowerText_63[] = _("{STR_VAR_1} is jumping around in a\ncarefree way!");
++static const u8 sFollowerText_64[] = _("{STR_VAR_1} is moving around happily!");
++static const u8 sFollowerText_65[] = _("{STR_VAR_1} is staring straight in this\ndirection!");
++static const u8 sFollowerText_66[] = _("{STR_VAR_1} turned its gaze away...");
++static const u8 sFollowerText_67[] = _("{STR_VAR_1} is poking at\n{PLAYER}'s Bag!\pScold it?");
++static const u8 sFollowerText_68[] = _("{STR_VAR_1} is staring straight into\n{PLAYER}'s eyes.");
++static const u8 sFollowerText_69[] = _("{STR_VAR_1} beamed happily at you!");
++static const u8 sFollowerText_81[] = _("{STR_VAR_1} is gazing at the morning\nsun...");
++static const u8 sFollowerText_84[] = _("{STR_VAR_1} chewed on your feet!\nScold it?");
++static const u8 sFollowerText_85[] = _("{STR_VAR_1} nipped at your feet!\nWant to show a little anger?");
++static const u8 sFollowerText_87[] = _("{STR_VAR_1} is carefully scanning the\narea!");
++static const u8 sFollowerText_88[] = _("{STR_VAR_1} is surveying the area!");
++static const u8 sFollowerText_89[] = _("{STR_VAR_1} seems to be unhappy that\nit's so hot...");
++static const u8 sFollowerText_90[] = _("{STR_VAR_1}'s head is bowed\nbecause of the heat.");
++static const u8 sFollowerText_91[] = _("{STR_VAR_1} seems to be really\nenjoying the heat!");
++static const u8 sFollowerText_92[] = _("{STR_VAR_1} seems to be happy about\nthe rain!");
++static const u8 sFollowerText_93[] = _("{STR_VAR_1} is very happy about the\nrain!");
++static const u8 sFollowerText_94[] = _("{STR_VAR_1} seems to be very\nsurprised that it's raining!");
++static const u8 sFollowerText_95[] = _("{STR_VAR_1} looks like it's about to\nfall over!");
++static const u8 sFollowerText_96[] = _("{STR_VAR_1} is vigorously producing\nfire!");
++static const u8 sFollowerText_97[] = _("{STR_VAR_1} suddenly became angry!");
++static const u8 sFollowerText_98[] = _("{STR_VAR_1} suddenly roared!");
++static const u8 sFollowerText_99[] = _("{STR_VAR_1} suddenly turned around\nand started barking!");
++static const u8 sFollowerText_100[] = _("{STR_VAR_1} suddenly turned around!");
++static const u8 sFollowerText_104[] = _("{STR_VAR_1} is rolling a pebble around\nplayfully.");
++static const u8 sFollowerText_105[] = _("{STR_VAR_1} is smelling the scents of\nthe surrounding air.");
++static const u8 sFollowerText_109[] = _("{STR_VAR_1} is cheerful!");
++static const u8 sFollowerText_111[] = _("{STR_VAR_1} let out a roar!");
++static const u8 sFollowerText_113[] = _("{STR_VAR_1} is staring at the sea.");
++static const u8 sFollowerText_114[] = _("{STR_VAR_1} is excited to be looking at\nthe sea!");
++static const u8 sFollowerText_115[] = _("{STR_VAR_1} is so happy, it started\ndancing!");
++static const u8 sFollowerText_117[] = _("{STR_VAR_1} seems very happy to\nsee you.");
++static const u8 sFollowerText_119[] = _("{STR_VAR_1} seems very happy and\nis jumping around!");
++static const u8 sFollowerText_122[] = _("{STR_VAR_1} got tangled in the\nbranches and almost fell down!");
++static const u8 sFollowerText_127[] = _("{STR_VAR_1} is staring into the\ndepths...");
++static const u8 sFollowerText_132[] = _("{STR_VAR_1} began poking you in the\nstomach!");
++static const u8 sFollowerText_135[] = _("{STR_VAR_1} seems to be getting an\nelectrifying feeling!");
++static const u8 sFollowerText_136[] = _("{STR_VAR_1} feels refreshed!");
++static const u8 sFollowerText_137[] = _("{STR_VAR_1} is trembling!");
++static const u8 sFollowerText_140[] = _("{STR_VAR_1} is listening to the sound\nof the machine.");
++static const u8 sFollowerText_141[] = _("{STR_VAR_1} seems to want to touch\nthe machine!");
++static const u8 sFollowerText_142[] = _("{STR_VAR_1} is staring intently at the\nmachine.");
++static const u8 sFollowerText_145[] = _("{STR_VAR_1} moved around and showed\nits skills!");
++static const u8 sFollowerText_147[] = _("{STR_VAR_1} is gazing around\nrestlessly.");
++static const u8 sFollowerText_148[] = _("{STR_VAR_1} is wandering around and\nlistening to the different sounds.");
++static const u8 sFollowerText_149[] = _("{STR_VAR_1} is wandering around and\nsearching for something.");
++static const u8 sFollowerText_150[] = _("{STR_VAR_1} is wandering around.");
++static const u8 sFollowerText_151[] = _("{STR_VAR_1} is wandering around and\nenjoying the forest scenery.");
++static const u8 sFollowerText_153[] = _("{STR_VAR_1} is wandering around,\nsurveying the area.");
++static const u8 sFollowerText_155[] = _("{STR_VAR_1} is getting itself\nsteeled up!");
++static const u8 sFollowerText_157[] = _("{STR_VAR_1} is playing around, plucking\nbits of grass.");
++static const u8 sFollowerText_158[] = _("{STR_VAR_1} is munching at the grass.");
++static const u8 sFollowerText_159[] = _("{STR_VAR_1} is playing around, pulling\nout the grass!");
++static const u8 sFollowerText_160[] = _("{STR_VAR_1} is preoccupied by the\nfloor, which seems like it may collapse.");
++static const u8 sFollowerText_161[] = _("{STR_VAR_1} is preoccupied by the\nceiling, which seems like it may collapse.");
++static const u8 sFollowerText_165[] = _("{STR_VAR_1} is trying very hard to\nkeep up with you...");
++static const u8 sFollowerText_166[] = _("{STR_VAR_1} rolled around in circles!");
++static const u8 sFollowerText_167[] = _("{STR_VAR_1} is sniffing at the air,\nsmelling the tide.");
++static const u8 sFollowerText_168[] = _("{STR_VAR_1} is standing guard!");
++static const u8 sFollowerText_169[] = _("{STR_VAR_1} is glowing with health!");
++static const u8 sFollowerText_170[] = _("{STR_VAR_1} gave a hearty greeting!");
++static const u8 sFollowerText_171[] = _("{STR_VAR_1} jumped happily into the\nair!");
++static const u8 sFollowerText_172[] = _("{STR_VAR_1} is touching the ice.");
++static const u8 sFollowerText_173[] = _("{STR_VAR_1} is gnawing at the ice.");
++static const u8 sFollowerText_174[] = _("{STR_VAR_1} is scratching at the\nground as if searching for something.");
++static const u8 sFollowerText_175[] = _("{STR_VAR_1} has turned its face this\nway and is staring intently.");
++static const u8 sFollowerText_176[] = _("{STR_VAR_1} faced this way\nand grinned.");
++static const u8 sFollowerText_177[] = _("{STR_VAR_1} faced this way and\nnodded.");
++static const u8 sFollowerText_178[] = _("{STR_VAR_1} is staring at the sunlight\ncoming through the trees.");
++static const u8 sFollowerText_181[] = _("{STR_VAR_1} is scared and snuggled\nup to you!");
++static const u8 sFollowerText_182[] = _("{STR_VAR_1} is cheerful because of\nthe cold!");
++static const u8 sFollowerText_183[] = _("{STR_VAR_1} seems unhappy about the\ncold...");
++static const u8 sFollowerText_184[] = _("{STR_VAR_1} is cheering happily\nbecause of the cold!");
++static const u8 sFollowerText_185[] = _("{STR_VAR_1} made its body slightly\nsmaller because of the cold...");
++static const u8 sFollowerText_186[] = _("{STR_VAR_1} seems to be feeling better\nbecause of the sea breeze!");
++static const u8 sFollowerText_189[] = _("{STR_VAR_1} flared its fiery tail!");
++static const u8 sFollowerText_190[] = _("{STR_VAR_1} seems interested in\nBicycles!");
++static const u8 sFollowerText_192[] = _("{STR_VAR_1} is staring intently at the\nreflection of its face.");
++static const u8 sFollowerText_193[] = _("{STR_VAR_1} is staring at the\nreflection of its face.");
++static const u8 sFollowerText_194[] = _("{STR_VAR_1} seems very unhappy to be\nwet...");
++static const u8 sFollowerText_195[] = _("{STR_VAR_1} is sniffing at the ground.");
++static const u8 sFollowerText_196[] = _("{STR_VAR_1} is poking steadily at the\nground.");
++static const u8 sFollowerText_197[] = _("{STR_VAR_1} is looking down steadily.");
++static const u8 sFollowerText_198[] = _("{STR_VAR_1} is poking at the ground.");
++static const u8 sFollowerText_202[] = _("{STR_VAR_1} is walking along\ncautiously!");
++static const u8 sFollowerText_203[] = _("{STR_VAR_1} is being nervously quiet...");
++static const u8 sFollowerText_205[] = _("{STR_VAR_1} seems a bit nervous.");
++static const u8 sFollowerText_206[] = _("{STR_VAR_1} is a little excited!");
++static const u8 sFollowerText_207[] = _("{STR_VAR_1} fell down and got a little\nfrustrated!");
++static const u8 sFollowerText_208[] = _("{STR_VAR_1} seems a little tired.");
++static const u8 sFollowerText_209[] = _("{STR_VAR_1} is bustling around,\nshowing off its speed!");
++static const u8 sFollowerText_210[] = _("{STR_VAR_1} seemed to tremble a little\nin surprise!");
++static const u8 sFollowerText_211[] = _("{STR_VAR_1} slipped and bumped into\nyou!");
++static const u8 sFollowerText_212[] = _("{STR_VAR_1} is a bit nervous about the\nnarrow space!");
++static const u8 sFollowerText_213[] = _("{STR_VAR_1} is cautious about the\nconfined area!");
++static const u8 sFollowerText_216[] = _("{STR_VAR_1} is itching to see\noutdoors!");
++static const u8 sFollowerText_217[] = _("{STR_VAR_1} is poking at you because\nit wants to see outdoors!");
++static const u8 sFollowerText_219[] = _("{STR_VAR_1} is looking up at the tall\nmountain...");
++static const u8 sFollowerText_220[] = _("{STR_VAR_1} cried out, looking at the\ntall mountain!");
++static const u8 sFollowerText_221[] = _("{STR_VAR_1} seems concerned about\nthe waterfall!");
++static const u8 sFollowerText_222[] = _("{STR_VAR_1} is listening to the sound\nof the waterfall.");
++static const u8 sFollowerText_223[] = _("{STR_VAR_1} seems to be hearing\nsomething from inside the waterfall...");
++static const u8 sFollowerText_224[] = _("{STR_VAR_1} seems to have found\nsomething inside the waterfall...?");
++static const u8 sFollowerText_225[] = _("{STR_VAR_1} kept moving at a good clip\nto show off its stamina!");
++static const u8 sFollowerText_226[] = _("{STR_VAR_1} is feeling an unusual\npresence...");
++static const u8 sFollowerText_228[] = _("{STR_VAR_1} is listening to the sounds\nof the building.");
++static const u8 sFollowerText_230[] = _("{STR_VAR_1} is growling softly...");
++static const u8 sFollowerText_231[] = _("{STR_VAR_1} is working hard to show\noff its mighty power!");
++static const u8 sFollowerText_232[] = _("{STR_VAR_1} is making an unhappy\nface...");
++static const u8 sFollowerText_233[] = _("{STR_VAR_1} is a little nervous...");
++static const u8 sFollowerText_236[] = _("{STR_VAR_1} seems to be a little\nhesitant...");
++static const u8 sFollowerText_238[] = _("{STR_VAR_1} snapped its vine!");
++static const u8 sFollowerText_239[] = _("{STR_VAR_1} wiggled its vine!");
++static const u8 sFollowerText_240[] = _("{STR_VAR_1} is staring intently at the\ngoods on display!");
++static const u8 sFollowerText_241[] = _("{STR_VAR_1} stared at the ceiling\nin surprise!");
++static const u8 sFollowerText_243[] = _("{STR_VAR_1} is looking up at the\nceiling.");
++static const u8 sFollowerText_245[] = _("{STR_VAR_1} seems very hot...");
++static const u8 sFollowerText_248[] = _("{STR_VAR_1} seems very cold!");
++static const u8 sFollowerText_249[] = _("{STR_VAR_1} seems to really be having\nfun!");
++static const u8 sFollowerText_250[] = _("{STR_VAR_1} is playing on the sand!");
++static const u8 sFollowerText_251[] = _("{STR_VAR_1} is having fun getting\ntangled in the long grass!");
++static const u8 sFollowerText_252[] = _("{STR_VAR_1} is tangled in the long\ngrass!");
++static const u8 sFollowerText_253[] = _("{STR_VAR_1} is tripping over the tall\ngrass!");
++static const u8 sFollowerText_254[] = _("{STR_VAR_1} is biting at the tall\ngrass!");
++static const u8 sFollowerText_255[] = _("{STR_VAR_1} is staring intently at the\nsurging sea.");
++static const u8 sFollowerText_256[] = _("{STR_VAR_1} seems to be scared of\nsomething...");
++static const u8 sFollowerText_257[] = _("{STR_VAR_1} was surprised by a sudden\nsound!");
++static const u8 sFollowerText_258[] = _("{STR_VAR_1} sensed something strange\nand was surprised!");
++static const u8 sFollowerText_259[] = _("{STR_VAR_1} is sensing something...");
++static const u8 sFollowerText_261[] = _("{STR_VAR_1} is listening intently to\nthe sound of the waves.");
++static const u8 sFollowerText_262[] = _("{STR_VAR_1} is happily watching the\nwaves!");
++static const u8 sFollowerText_263[] = _("{STR_VAR_1} seems to be hearing a\nstrange sound.");
++static const u8 sFollowerText_264[] = _("{STR_VAR_1} seems incredibly happy!");
++static const u8 sFollowerText_265[] = _("{STR_VAR_1} seems angry for some\nreason!");
++static const u8 sFollowerText_266[] = _("{STR_VAR_1} is nervous for some\nreason!");
++static const u8 sFollowerText_270[] = _("{STR_VAR_1} seems to be very happy\nfor some reason!");
++static const u8 sFollowerText_271[] = _("{STR_VAR_1} is suspiciously sniffing a\nscent.");
++static const u8 sFollowerText_272[] = _("{STR_VAR_1} is looking this way and\nsmiling.");
++static const u8 sFollowerText_273[] = _("{STR_VAR_1} is relaxing.");
++static const u8 sFollowerText_280[] = _("{STR_VAR_1} seems to relax as it hears\nthe sound of rustling leaves...");
++static const u8 sFollowerText_281[] = _("{STR_VAR_1} seems to be listening to\nthe sound of rustling leaves.");
++static const u8 sFollowerText_282[] = _("{STR_VAR_1} is playing around,\ntouching the leaves.");
++static const u8 sFollowerText_287[] = _("{STR_VAR_1} is jumping around!");
++static const u8 sFollowerText_289[] = _("{STR_VAR_1} is looking at the machine\nin a strange manner.");
++static const u8 sFollowerText_292[] = _("{STR_VAR_1} is swaying with the boat!");
++static const u8 sFollowerText_293[] = _("{STR_VAR_1} is dizzy!");
++static const u8 sFollowerText_299[] = _("{STR_VAR_1} sent a ring-shaped cloud\nof spores into the air!");
++static const u8 sFollowerText_301[] = _("{STR_VAR_1} is staring straight at the\nPokémon League.");
++static const u8 sFollowerText_302[] = _("{STR_VAR_1} spat fire!");
++static const u8 sFollowerText_303[] = _("{STR_VAR_1} emitted fire and shouted!");
++static const u8 sFollowerText_305[] = _("{STR_VAR_1} seems to be enjoying the\nboat ride!");
++static const u8 sFollowerText_306[] = _("{STR_VAR_1} is still feeling great!");
++static const u8 sFollowerText_307[] = _("{STR_VAR_1} doesn't want to get off\nthe boat yet!");
++static const u8 sFollowerText_310[] = _("{STR_VAR_1} is cautiously listening\nto the surrounding sounds!");
++static const u8 sFollowerText_312[] = _("{STR_VAR_1} is looking around\nabsentmindedly.");
++static const u8 sFollowerText_314[] = _("{STR_VAR_1} is surprised at the\ndripping water!");
++static const u8 sFollowerText_315[] = _("{STR_VAR_1} is playing in the puddle!");
++static const u8 sFollowerText_316[] = _("{STR_VAR_1} is slipping in the water\nand almost fell over!");
++static const u8 sFollowerText_317[] = _("{STR_VAR_1} spat out a stream of\nwater!");
++static const u8 sFollowerText_321[] = _("{STR_VAR_1} focused with a\nsharp gaze!");
++static const u8 sFollowerText_322[] = _("{STR_VAR_1} is being quiet, with a\npeaceful face...");
++static const u8 sFollowerText_323[] = _("{STR_VAR_1} tightly gripped the\n{STR_VAR_2} it's holding!");
++static const u8 sFollowerText_324[] = _("{STR_VAR_1} is staring at the\n{STR_VAR_2} it's holding.");
++static const u8 sFollowerText_325[] = _("{STR_VAR_1} is staring intently at the\n{STR_VAR_2} it's holding.");
++static const u8 sFollowerText_327[] = _("{STR_VAR_1} is looking around\nrestlessly at the forest.");
++static const u8 sFollowerText_328[] = _("{STR_VAR_1}'s burn looks painful!");
++static const u8 sFollowerText_329[] = _("{STR_VAR_1} seems to have found\nsomething on the mountain!");
++static const u8 sFollowerText_331[] = _("{STR_VAR_1} is staring intently at the\nmountain.");
++static const u8 sFollowerText_333[] = _("{STR_VAR_1} is looking at the mountain\nas if anticipating climbing it.");
++static const u8 sFollowerText_334[] = _("{STR_VAR_1} is very eager!");
++static const u8 sFollowerText_337[] = _("{STR_VAR_1} is gazing at the red\nsky...");
++static const u8 sFollowerText_341[] = _("{STR_VAR_1} is sniffing at the floor.");
++static const u8 sFollowerText_343[] = _("{STR_VAR_1} slowly turned to look at\nyour face.");
++static const u8 sFollowerText_344[] = _("{STR_VAR_1} is relaxing comfortably.");
++static const u8 sFollowerText_347[] = _("{STR_VAR_1} is dancing along with the\nrolling of the ship!");
++static const u8 sFollowerText_348[] = _("{STR_VAR_1} is gazing at the night\nsky...");
++static const u8 sFollowerText_349[] = _("{STR_VAR_1} is very composed and sure\nof itself.");
++static const u8 sFollowerText_350[] = _("{STR_VAR_1} yawned loudly.");
++static const u8 sFollowerText_351[] = _("{STR_VAR_1} got closer to\n{PLAYER}!");
++static const u8 sFollowerText_352[] = _("{STR_VAR_1} bumped into {PLAYER}!");
++static const u8 sFollowerText_353[] = _("{STR_VAR_1} is watching\n{PLAYER}'s face.");
++static const u8 sFollowerText_354[] = _("{STR_VAR_1} is saying hello!");
++static const u8 sFollowerText_356[] = _("{STR_VAR_1} is on the lookout!");
++static const u8 sFollowerText_357[] = _("{STR_VAR_1} is in danger of falling\nover!");
++static const u8 sFollowerText_358[] = _("{STR_VAR_1} is vigorously breathing\nfire!");
++static const u8 sFollowerText_359[] = _("{STR_VAR_1} seems to be about to fall\nover!");
++static const u8 sFollowerText_360[] = _("{STR_VAR_1} was surprised by its own\nreflection!");
++static const u8 sFollowerText_362[] = _("{STR_VAR_1} is happy but shy!");
++static const u8 sFollowerText_364[] = _("{STR_VAR_1} is poking at your belly.");
++static const u8 sFollowerText_369[] = _("{STR_VAR_1} is smelling the grass.");
++static const u8 sFollowerText_371[] = _("{STR_VAR_1} is taking shelter in the\ngrass from the rain.");
++static const u8 sFollowerText_372[] = _("{STR_VAR_1} is rolling around in the\ngrass.");
++static const u8 sFollowerText_373[] = _("{STR_VAR_1} is splashing around in the\nwet grass.");
++static const u8 sFollowerText_374[] = _("{STR_VAR_1} seems to have gotten\ncaught in the clumps of grass!");
++static const u8 sFollowerText_375[] = _("{STR_VAR_1} was surprised by the\nsounds in the thicket!");
++static const u8 sFollowerText_376[] = _("{STR_VAR_1} is noticing the scent of\nthe grass.");
++static const u8 sFollowerText_377[] = _("{STR_VAR_1} is staring at the grass.");
++static const u8 sFollowerText_378[] = _("{STR_VAR_1} is stomping on the grass!");
++static const u8 sFollowerText_379[] = _("{STR_VAR_1} is pulling out the grass!");
++static const u8 sFollowerText_384[] = _("{STR_VAR_1} is sniffing around the\nroom.");
++static const u8 sFollowerText_385[] = _("{STR_VAR_1} is coming along happily!");
++static const u8 sFollowerText_386[] = _("{STR_VAR_1} is shivering with cold...");
++static const u8 sFollowerText_388[] = _("{STR_VAR_1} seems a bit scared...");
++static const u8 sFollowerText_389[] = _("{STR_VAR_1} slipped and seems about\nto fall over!");
++static const u8 sFollowerText_390[] = _("{STR_VAR_1} seems to really enjoy\nsliding around!");
++static const u8 sFollowerText_392[] = _("{STR_VAR_1} is staring intently at the\nsky.");
++static const u8 sFollowerText_393[] = _("{STR_VAR_1} is looking up at the sky.");
++static const u8 sFollowerText_394[] = _("{STR_VAR_1} is staring intently off\ninto the distance.");
++static const u8 sFollowerText_395[] = _("{STR_VAR_1} is shivering with the\neffects of being poisoned...");
++static const u8 sFollowerText_397[] = _("{STR_VAR_1} was jumping up and down!");
++static const u8 sFollowerText_398[] = _("{STR_VAR_1} feels something...");
++static const u8 sFollowerText_399[] = _("{STR_VAR_1} feels something and is\nhowling!");
++static const u8 sFollowerText_400[] = _("{STR_VAR_1} is staring patiently at\nnothing at all.");
++static const u8 sFollowerText_401[] = _("{STR_VAR_1} is somehow forcing itself\nto keep going.");
++static const u8 sFollowerText_402[] = _("{STR_VAR_1} is somehow fighting off\nsleep...");
++static const u8 sFollowerText_403[] = _("{STR_VAR_1}'s head is nodding as it\nstarts to fall asleep...");
++static const u8 sFollowerText_404[] = _("{STR_VAR_1} has a sleepy look on\nits face...");
++static const u8 sFollowerText_406[] = _("{STR_VAR_1} is making its leaf twitch.");
++static const u8 sFollowerText_407[] = _("{STR_VAR_1} is waving its leaf around.");
++static const u8 sFollowerText_408[] = _("{STR_VAR_1} is throwing a leaf around!");
++static const u8 sFollowerText_410[] = _("{STR_VAR_1} blew out a fireball.");
++static const u8 sFollowerText_411[] = _("{STR_VAR_1} blew out a couple\nof fireballs.");
++static const u8 sFollowerText_412[] = _("{STR_VAR_1} is breathing out fire!");
++static const u8 sFollowerText_413[] = _("{STR_VAR_1} is trying to touch\nthe machine.");
++static const u8 sFollowerText_415[] = _("{STR_VAR_1} is splashing around in the\npuddle!");
++static const u8 sFollowerText_416[] = _("{STR_VAR_1} is staring at the\nreflections in the water.");
++static const u8 sFollowerText_446[] = _("Your Pokémon is happily gazing at the\nmorning sun!");
++static const u8 sFollowerText_447[] = _("Your Pokémon is blowing sand in the air!");
++static const u8 sFollowerText_448[] = _("Your Pokémon is happily looking at\n{PLAYER}'s footprints!");
++static const u8 sFollowerText_450[] = _("Your Pokémon doesn't like splashing\naround on the ground...");
++static const u8 sFollowerText_451[] = _("Your Pokémon is happy to be splashing\naround on the ground!");
++static const u8 sFollowerText_452[] = _("Your Pokémon is hot and cheerful!");
++static const u8 sFollowerText_453[] = _("Your Pokémon seems to be unhappy that\nit's hot...");
++static const u8 sFollowerText_457[] = _("{STR_VAR_1} is keeping close to you.");
++static const u8 sFollowerText_458[] = _("{STR_VAR_1} started spinning around in\ncircles.");
++static const u8 sFollowerText_459[] = _("Your Pokémon seems to be happy about\nthe great weather!");
++static const u8 sFollowerText_460[] = _("Sniff, sniff!\nSomething smells good!");
++static const u8 sFollowerText_462[] = _("Your Pokémon was surprised that you\nsuddenly spoke to it!");
++static const u8 sFollowerText_465[] = _("{STR_VAR_1} is suddenly angry!");
++static const u8 sFollowerText_466[] = _("Your Pokémon is staring at\nvarious items.");
++static const u8 sFollowerText_467[] = _("{STR_VAR_1} is happily digging in the\nground!");
++static const u8 sFollowerText_476[] = _("Your Pokémon is staring intently at\nthe sea!");
++static const u8 sFollowerText_477[] = _("Your Pokémon is mumbling happily.");
++static const u8 sFollowerText_479[] = _("{STR_VAR_1} shook the tower with its\nvoice!");
++static const u8 sFollowerText_485[] = _("{STR_VAR_1} is happily waving\n{STR_VAR_2} around and singing.");
++static const u8 sFollowerText_487[] = _("Your Pokémon stretched out its body\nand is relaxing.");
++static const u8 sFollowerText_488[] = _("Your Pokémon is feeling good and sleepy.");
++static const u8 sFollowerText_490[] = _("Your Pokémon is looking around\nrestlessly for something.");
++static const u8 sFollowerText_491[] = _("Your Pokémon is surveying the\nshelves restlessly.");
++static const u8 sFollowerText_493[] = _("Your Pokémon has caught the scent\nof smoke.");
++static const u8 sFollowerText_496[] = _("Sniff, sniff!\nIs there something nearby?");
++static const u8 sFollowerText_500[] = _("{STR_VAR_1} gave you a sunny look!");
++static const u8 sFollowerText_502[] = _("Your Pokémon seems surprised to\ntouch ice!");
++static const u8 sFollowerText_507[] = _("{STR_VAR_1} seems very happy about\nthe cold!");
++static const u8 sFollowerText_508[] = _("{STR_VAR_1} snuggled up for warmth!");
++static const u8 sFollowerText_510[] = _("{STR_VAR_1} is staring intently at the\nshelves.");
++static const u8 sFollowerText_513[] = _("Your Pokémon is rolling a screw from a\nBicycle around.");
++static const u8 sFollowerText_514[] = _("Your Pokémon seems happy to be all wet!");
++static const u8 sFollowerText_515[] = _("{STR_VAR_1} doesn't seem to like being\nall wet...");
++static const u8 sFollowerText_516[] = _("{STR_VAR_1} shook the tower with its\ncry!");
++static const u8 sFollowerText_518[] = _("{STR_VAR_1} danced a wonderful dance!");
++static const u8 sFollowerText_520[] = _("{STR_VAR_1} danced beautifully!");
++static const u8 sFollowerText_521[] = _("{STR_VAR_1} danced happily!");
++static const u8 sFollowerText_523[] = _("{STR_VAR_1} seems unhappy somehow...");
++static const u8 sFollowerText_524[] = _("{STR_VAR_1} is cheerful that it's\nbecome a bit cold!");
++static const u8 sFollowerText_525[] = _("{STR_VAR_1} seemed a little surprised.");
++static const u8 sFollowerText_527[] = _("Your Pokémon stumbled and nearly fell!");
++static const u8 sFollowerText_537[] = _("Your Pokémon seems to be\nsinging something?");
++static const u8 sFollowerText_541[] = _("Your Pokémon is staring intently\nat nothing...");
++static const u8 sFollowerText_547[] = _("Your Pokémon seems to be hearing\nsomething from the wall...");
++static const u8 sFollowerText_548[] = _("A cold wind suddenly blew by!");
++static const u8 sFollowerText_549[] = _("Your Pokémon seems very hot...");
++static const u8 sFollowerText_550[] = _("{STR_VAR_1} seems to feel a little\nclaustrophobic.");
++static const u8 sFollowerText_551[] = _("{STR_VAR_1} seems embarrassed.");
++static const u8 sFollowerText_552[] = _("{STR_VAR_1} gives you a happy look\nand a smile!");
++static const u8 sFollowerText_553[] = _("{STR_VAR_1} is happily digging itself\ninto the ground!");
++static const u8 sFollowerText_554[] = _("{STR_VAR_1} is singing and humming!");
++static const u8 sFollowerText_555[] = _("Your Pokémon has a flower petal on\nits face!");
++static const u8 sFollowerText_556[] = _("Your Pokémon seems to want to go to\nthe sea as soon as possible!");
++static const u8 sFollowerText_557[] = _("{STR_VAR_1} is making a face like it's\nangry!");
++static const u8 sFollowerText_558[] = _("{STR_VAR_1} suddenly started dancing!");
++static const u8 sFollowerText_559[] = _("{STR_VAR_1} is looking up at the sky...");
++static const u8 sFollowerText_565[] = _("Your Pokémon is having fun splashing\naround in the water!");
++static const u8 sFollowerText_569[] = _("Your Pokémon jumped up in surprise!");
++static const u8 sFollowerText_576[] = _("Your Pokémon turned to face the other\nway, showing a defiant expression...");
++static const u8 sFollowerText_580[] = _("Something smells strange...");
++static const u8 sFollowerText_584[] = _("Your Pokémon is happily gazing at the\nbeautiful, starry sky!");
++static const u8 sFollowerText_585[] = _("Your Pokémon wasn't watching where it\nwas going and ran into you!");
++static const u8 sFollowerText_590[] = _("{STR_VAR_1} looks like it might be\npreparing for a big showdown!");
++static const u8 sFollowerText_593[] = _("{STR_VAR_1} seems happy to be all wet!");
++static const u8 sFollowerText_594[] = _("{STR_VAR_1} seems unhappy to be all\nwet...");
++static const u8 sFollowerText_595[] = _("{STR_VAR_1} seems very refreshed to\nbe all wet!");
++static const u8 sFollowerText_603[] = _("It is looking at the {STR_VAR_2}\nin its grasp...and drooling...");
++static const u8 sFollowerText_605[] = _("Your Pokémon is staring intently at the\nmountain peak.");
++static const u8 sFollowerText_606[] = _("Your Pokémon is happily looking at the\nred sky!");
++static const u8 sFollowerText_607[] = _("Your Pokémon is staring spellbound at\nthe night sky!");
++static const u8 sFollowerText_612[] = _("{STR_VAR_1} blew out a plume of fire\nand looked eager!");
++static const u8 sFollowerText_614[] = _("Whoa! {STR_VAR_1} suddenly hugged\nyou!");
++static const u8 sFollowerText_615[] = _("Whoa! {STR_VAR_1} is suddenly playful!");
++static const u8 sFollowerText_618[] = _("Whoa! Your Pokémon suddenly snuggled\nup to you!\pPat it on the head?");
++static const u8 sFollowerText_619[] = _("Waah!\nYour Pokémon suddenly splashed water!");
++static const u8 sFollowerText_624[] = _("...Your Pokémon seems a bit bored.");
++static const u8 sFollowerText_625[] = _("Your Pokémon seems a little sad!");
++static const u8 sFollowerText_628[] = _("...Your Pokémon appears to be somewhat\nhardened and unable to move.");
++static const u8 sFollowerText_631[] = _("Your Pokémon is indescribably happy!");
++static const u8 sFollowerText_632[] = _("Oh!\nYour Pokémon seems about to cry!");
++static const u8 sFollowerText_635[] = _("Your Pokémon is so surprised,\nit jumped!");
++static const u8 sFollowerText_636[] = _("Your Pokémon is staring blankly\nand drooling...");
++static const u8 sFollowerText_637[] = _("How nice! Your Pokémon is bouncing\naround happily!");
++static const u8 sFollowerText_639[] = _("Waah!\nYour Pokémon nuzzled your face!");
++static const u8 sFollowerText_640[] = _("Oh!\nYour Pokémon seems about to cry...");
++static const u8 sFollowerText_641[] = _("Your Pokémon seems so happy!");
++static const u8 sFollowerText_642[] = _("Your Pokémon is in a daze...");
++static const u8 sFollowerText_643[] = _("Your Pokémon seems to be having fun\nplaying with {PLAYER}!");
++static const u8 sFollowerText_644[] = _("Your Pokémon is grumbling because it\nwants you to pay more attention to it.");
++static const u8 sFollowerText_645[] = _("Your Pokémon feels safer just by seeing\n{PLAYER}'s face.");
++static const u8 sFollowerText_649[] = _("Your Pokémon seems to be a\nbit despondent...");
++static const u8 sFollowerText_650[] = _("Your Pokémon started chewing on the\nother shoe!");
++static const u8 sFollowerText_651[] = _("Your Pokémon seems to have been a\nlittle surprised!");
++static const u8 sFollowerText_652[] = _("Your Pokémon thinks it's funny to keep\npoking at you...");
++static const u8 sFollowerText_653[] = _("Your Pokémon seems to be a\nbit despondent...");
++static const u8 sFollowerText_655[] = _("...Your Pokémon seems to be\ncontemplating something.");
++static const u8 sFollowerText_656[] = _("Now, it's licking...");
++static const u8 sFollowerText_661[] = _("Your Pokémon seems a bit embarrassed.");
++static const u8 sFollowerText_670[] = _("...Your Pokémon seems a bit lonely.");
++static const u8 sFollowerText_679[] = _("Your Pokémon seems happy and is\npushing you!");
++static const u8 sFollowerText_680[] = _("Your Pokémon replied in a loud voice!");
++static const u8 sFollowerText_681[] = _("Your Pokémon seems very happy that\nyou've played with it!");
++static const u8 sFollowerText_684[] = _("Your Pokémon is grinding its teeth\nin remorse!");
++static const u8 sFollowerText_692[] = _("{STR_VAR_1} is staying completely\nstill--imitating a tree!");
++static const u8 sFollowerText_693[] = _("{STR_VAR_1} is standing perfectly still\nand might be imitating a tree...");
++static const u8 sFollowerText_694[] = _("{STR_VAR_1} is waggling a finger and\ndancing!");
++static const u8 sFollowerText_695[] = _("{STR_VAR_1} is looking at the lift and\nfeeling a touch of queasiness.");
++static const u8 sFollowerText_696[] = _("{STR_VAR_1} began to scuttle around!");
++static const u8 sFollowerText_697[] = _("{STR_VAR_1} moved sideways!");
++static const u8 sFollowerText_701[] = _("{STR_VAR_1} is jumping energetically!");
++static const u8 sFollowerText_703[] = _("{STR_VAR_1} seems somehow sad...");
++static const u8 sFollowerText_704[] = _("{STR_VAR_1} is trembling with fear.");
++static const u8 sFollowerText_705[] = _("{STR_VAR_1} is motionless, not looking\nat anything, as if in meditation.");
++static const u8 sFollowerText_706[] = _("{STR_VAR_1} is jumping around happily!");
++static const u8 sFollowerText_711[] = _("{STR_VAR_1} stuck out its claws and\nRooooaaarrred!");
++static const u8 sFollowerText_712[] = _("{STR_VAR_1} moved its long body and\nlet out a great big roar!");
++static const u8 sFollowerText_713[] = _("{STR_VAR_1} looked up at the sky and\nshouted loudly!");
++static const u8 sFollowerText_714[] = _("{STR_VAR_1}'s body shook with a great\nroar!");
++static const u8 sFollowerText_715[] = _("{STR_VAR_1} gathered itself up and let\nout a huge roar!");
++static const u8 sFollowerText_716[] = _("{STR_VAR_1} is happily zapping and\njumping in circles!");
++static const u8 sFollowerText_717[] = _("{STR_VAR_1} is having fun dancing\na lively jig!");
++static const u8 sFollowerText_718[] = _("{STR_VAR_1} is staring steadfastly at\n{PLAYER}'s face.");
++static const u8 sFollowerText_719[] = _("{STR_VAR_1} is sniffing\nat {PLAYER}.");
++static const u8 sFollowerText_720[] = _("{STR_VAR_1} is looking this way and\nsmiling!");
++static const u8 sFollowerText_721[] = _("{STR_VAR_1} doesn't seem used to its\nown name yet.");
++static const u8 sFollowerText_722[] = _("{STR_VAR_1} sent a ring-shaped cloud\nof spores into the air!");
++static const u8 sFollowerText_724[] = _("...Oh?\n{STR_VAR_1}'s appearance...\pDidn't change!");
++static const u8 sFollowerText_725[] = _("{STR_VAR_1} is extending its vines and\nwrapping itself in them!\pSeems like fun!");
++static const u8 sFollowerText_727[] = _("Your Pokémon seems to be smelling a\nnostalgically familiar scent...");
++static const u8 sFollowerText_728[] = _("{STR_VAR_1} is very relaxed.");
++static const u8 sFollowerText_730[] = _("Your Pokémon seems concerned that the\nmachine is running.");
++static const u8 sFollowerText_732[] = _("{STR_VAR_1} is in high spirits!");
++static const u8 sFollowerText_750[] = _("{STR_VAR_1} is feeling nervous and a\ntouch claustrophobic.");
++static const u8 sFollowerText_755[] = _("{STR_VAR_1} nodded slowly.");
++static const u8 sFollowerText_756[] = _("{STR_VAR_1} let out a battle cry!");
++static const u8 sFollowerText_757[] = _("{STR_VAR_1} is concentrating...");
++
++#define T(n) sFollowerText_##n
+--- a/data/scripts/follower.inc
++++ b/data/scripts/follower.inc
+@@ -0,0 +1,27 @@
++@ Talking to the following Pokemon (PC port, see src/follower.c).
++@ FollowerInteract picks what it says into gStringVar4 and sets VAR_RESULT:
++@ 0 a message, 1 a Yes/No question, 2 an item it found (Yes/No to take it).
++
++EventScript_Follower::
++	lock
++	faceplayer
++	special FollowerInteract
++	waitstate
++	goto_if_eq VAR_RESULT, 1, EventScript_FollowerAnswer
++	goto_if_eq VAR_RESULT, 2, EventScript_FollowerAnswer
++	msgbox gStringVar4, MSGBOX_DEFAULT
++	release
++	end
++
++@ FollowerAnswer leaves VAR_RESULT TRUE (and the item in VAR_0x8004) if the
++@ found item is to be given.
++EventScript_FollowerAnswer:
++	msgbox gStringVar4, MSGBOX_YESNO
++	special FollowerAnswer
++	waitstate
++	msgbox gStringVar4, MSGBOX_DEFAULT
++	goto_if_eq VAR_RESULT, FALSE, EventScript_FollowerEnd
++	giveitem VAR_0x8004
++EventScript_FollowerEnd:
++	release
++	end

@@ -1,0 +1,15 @@
+--- a/src/pokemon_summary_screen.c
++++ b/src/pokemon_summary_screen.c
+@@ -1668,6 +1668,12 @@
+         ChangeBgX(2, 0x10000, BG_COORD_ADD);
+         ClearWindowTilemap(PSS_LABEL_WINDOW_PORTRAIT_SPECIES);
+         ClearWindowTilemap(PSS_LABEL_WINDOW_POKEMON_SKILLS_STATUS);
++#ifdef PLATFORM_3DS
++        // Choosing a move to forget starts with the Effect window out: the
++        // taller one with the Category row, not the page graphics' own.
++        if (sMonSummaryScreen->mode == SUMMARY_MODE_SELECT_MOVE)
++            HandlePowerAccTilemap(0, 0);
++#endif
+     }
+ 
+     if (sMonSummaryScreen->summary.ailment == AILMENT_NONE)
