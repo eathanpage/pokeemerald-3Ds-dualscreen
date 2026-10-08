@@ -3777,6 +3777,123 @@ static void DrawBwBg(unsigned bg, const CtrBwSprite *bw)
     ++sStats.tiles;
 }
 
+/*
+ * A framed box across the field's text layer - the message box, a sign, a
+ * PokeNav call - spans the GBA's 240px; on the field the layer is drawn moved
+ * to the middle of the 400px screen (CTR_FIELD_UI_SHIFT). The box is stretched
+ * to the screen's edges instead: its caps go to the edges and its middle is
+ * repeated between them, the text staying where it is.
+ */
+typedef struct
+{
+    unsigned row0, row1;  /* the box's first and last tile rows */
+    unsigned left, right; /* its first and last columns */
+    unsigned cap;         /* columns of each cap (2 for the message box's frame, 1 for a window frame) */
+} WideBox;
+
+static bool FindWideBox(unsigned bg, WideBox *box)
+{
+    unsigned control = Reg(8 + bg * 2), size = control >> 14;
+    unsigned map = ((control >> 8) & 31) * 0x800;
+    unsigned run = 0;
+
+    if (size & 1) return false;
+    for (unsigned row = 0; row <= 32; row++)
+    {
+        unsigned left = 32, right = 0;
+        bool solid = false;
+
+        if (row < 32)
+        {
+            for (unsigned c = 0; c < 32; c++)
+                if (MapEntry(map, size, c, row) & 1023)
+                {
+                    if (left == 32) left = c;
+                    right = c;
+                }
+            solid = left <= 2 && right >= 27 && right - left >= 25;
+            for (unsigned c = left; solid && c <= right; c++)
+                solid = (MapEntry(map, size, c, row) & 1023) != 0;
+        }
+        if (solid && run && left == box->left && right == box->right)
+        {
+            box->row1 = row;
+            run++;
+            continue;
+        }
+        if (run >= 3)
+            break;
+        run = solid ? 1 : 0;
+        if (solid)
+        {
+            box->row0 = box->row1 = row;
+            box->left = left;
+            box->right = right;
+        }
+    }
+    if (run < 3) return false;
+    /* A frame's corner then its edge: the message box's frame has a second
+     * corner piece before the edge repeats. */
+    box->cap = MapEntry(map, size, box->left + 1, box->row0) != MapEntry(map, size, box->left + 2, box->row0) ? 2 : 1;
+    return true;
+}
+
+static void DrawWideBoxTile(unsigned chars, bool color256, unsigned entry, int x, int y)
+{
+    int slot = EntrySlot(chars, entry, color256);
+
+    if (slot >= 0)
+        DrawSlot(slot, x + CTR_VIEW_X + sLayerShift, y + CTR_VIEW_Y, entry & 1024, entry & 2048);
+}
+
+/* The box's rows, stretched: x in the layer's own coordinates (sLayerShift
+ * moves them on screen), so the screen's edges are at sClipX0/1 - shift. */
+static void DrawWideBox(unsigned bg, const WideBox *box)
+{
+    unsigned control = Reg(8 + bg * 2), size = control >> 14;
+    unsigned map = ((control >> 8) & 31) * 0x800;
+    unsigned chars = ((control >> 2) & 3) * 0x4000;
+    bool color256 = (control & 128) != 0;
+    int scrollX = (int)(Reg(0x10 + bg * 4) & 511), scrollY = (int)(Reg(0x12 + bg * 4) & 511);
+    int shift = (int)sLayerShift;
+    int edge0 = sClipX0 - shift, edge1 = sClipX1 - shift;
+    int inner0 = (int)(box->left + box->cap) * 8 - scrollX, inner1 = (int)(box->right + 1 - box->cap) * 8 - scrollX;
+    int y0 = (int)box->row0 * 8 - scrollY, y1 = (int)(box->row1 + 1) * 8 - scrollY;
+    int x0 = sClipX0, x1 = sClipX1;
+
+    if (y0 < sClipY0) y0 = sClipY0;
+    if (y1 > sClipY1) y1 = sClipY1;
+    if (y0 >= y1) return;
+    C2D_Flush();
+    Scissor(x0, y0, x1, y1);
+    ViewBase();
+    for (unsigned row = box->row0; row <= box->row1; row++)
+    {
+        int y = (int)row * 8 - scrollY;
+        bool border = row == box->row0 || row == box->row1;
+        unsigned middle = MapEntry(map, size, border ? box->left + box->cap : box->left + 1, row);
+
+        if (y + 8 <= y0 || y >= y1) continue;
+        /* The middle across, under everything else. */
+        for (int x = edge0 + (int)box->cap * 8; x < inner0; x += 8)
+            DrawWideBoxTile(chars, color256, middle, x, y);
+        for (int x = inner1; x < edge1 - (int)box->cap * 8; x += 8)
+            DrawWideBoxTile(chars, color256, middle, x, y);
+        /* What lies between the caps, where the game put it. */
+        for (unsigned c = box->left + box->cap; c + box->cap <= box->right; c++)
+            DrawWideBoxTile(chars, color256, MapEntry(map, size, c, row), (int)c * 8 - scrollX, y);
+        /* The caps on the screen's edges. */
+        for (unsigned k = 0; k < box->cap; k++)
+        {
+            DrawWideBoxTile(chars, color256, MapEntry(map, size, box->left + k, row), edge0 + (int)k * 8, y);
+            DrawWideBoxTile(chars, color256, MapEntry(map, size, box->right + 1 - box->cap + k, row),
+                            edge1 - (int)(box->cap - k) * 8, y);
+        }
+    }
+    C2D_Flush();
+    RestoreScissor();
+}
+
 static void DrawObjects(unsigned priority, bool effects)
 {
     static const uint8_t dimensions[3][4][2] = {
@@ -4153,6 +4270,7 @@ static void Layers(unsigned mask)
             uint32_t tilesBefore = sStats.tiles;
             if (sFieldUi && bg == 0 && !sFieldBanner) sLayerShift += CTR_FIELD_UI_SHIFT / sShiftZoom;
             CtrBwSprite bwBg;
+            WideBox wideBox;
             unsigned bwHide;
             bool affine = (mode == 1 && bg == 2) || mode == 2;
             bool bwOn = !affine && FindBwBg(bg, &bwBg, &bwHide);
@@ -4165,6 +4283,29 @@ static void Layers(unsigned mask)
             if (affine && sNavBand && !lines) DrawNavBackmostAffine(bg);
             else if (affine) DrawAffineBg(bg);
             else if (sBattle && bg == 0) DrawBattleTextLayer(bg);
+            else if (bg == 0 && sFieldUi && !sFieldBanner && FindWideBox(bg, &wideBox))
+            {
+                /* Above and below the box as ever; the box stretched. */
+                int top = (int)wideBox.row0 * 8 - (int)(Reg(0x12) & 511);
+                int bottom = (int)(wideBox.row1 + 1) * 8 - (int)(Reg(0x12) & 511);
+                int clipTop = sClipY0, clipBottom = sClipY1;
+
+                if (top > clipTop)
+                {
+                    sClipY1 = top < clipBottom ? top : clipBottom;
+                    if (!DrawLineBg(bg) && !DrawFieldBgTex(bg) && !DrawStageBgTex(bg) && !DrawBandBgTex(bg))
+                        DrawTextBg(bg);
+                    sClipY1 = clipBottom;
+                }
+                if (bottom < clipBottom)
+                {
+                    sClipY0 = bottom > clipTop ? bottom : clipTop;
+                    if (!DrawLineBg(bg) && !DrawFieldBgTex(bg) && !DrawStageBgTex(bg) && !DrawBandBgTex(bg))
+                        DrawTextBg(bg);
+                    sClipY0 = clipTop;
+                }
+                DrawWideBox(bg, &wideBox);
+            }
             else if (!DrawLineBg(bg) && !DrawFieldBgTex(bg) && !DrawStageBgTex(bg) && !DrawBandBgTex(bg))
                 DrawTextBg(bg);
             if (bwOn)
