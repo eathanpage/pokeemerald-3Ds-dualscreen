@@ -1195,11 +1195,12 @@ static void DrawTile(unsigned address, unsigned bank, bool color256,
  * is moved as a whole (the battle text box, DrawBattleText). */
 static int sSpanShiftX, sSpanShiftY;
 
-/* The base transform of everything composed: the current zoom. */
+/* The base transform of everything composed: the current zoom and offset
+ * (the 1:1 battle has an offset alone). */
 static void ViewBase(void)
 {
     C2D_ViewReset();
-    if (sZoom != 1.0f)
+    if (sZoom != 1.0f || sOffX != 0.0f || sOffY != 0.0f)
     {
         C2D_ViewTranslate(sOffX, sOffY);
         C2D_ViewScale(sZoom, sZoom);
@@ -1938,6 +1939,98 @@ static bool BattleRowShown(unsigned map, unsigned size, unsigned chars, bool col
     return false;
 }
 
+/*
+ * A move's background that fills the GBA screen - Psychic's waves - is a
+ * 240x160 picture: 30x20 tiles of its map, the rest whatever was there.
+ * Past the picture, on this wider screen, it carries on as its own pattern
+ * repeats: by the smallest period of its tiles across and down (the whole
+ * picture if there is none), so the waves meet without a seam and nothing of
+ * the rest of the map shows. Measured every few frames.
+ */
+static struct { uint32_t frame; bool full; uint8_t across, down; } sBattleTiled[4];
+
+static bool BattleTiledBg(unsigned bg, unsigned *across, unsigned *down)
+{
+    unsigned control = Reg(8 + bg * 2), size = control >> 14;
+    unsigned map = ((control >> 8) & 31) * 0x800;
+    unsigned chars = ((control >> 2) & 3) * 0x4000;
+    bool color256 = (control & 128) != 0;
+    unsigned c0 = (Reg(0x10 + bg * 4) & 511) >> 3, r0 = (Reg(0x12 + bg * 4) & 511) >> 3;
+    uint16_t entries[20][30];
+
+    if (sBattleTiled[bg].frame && sStats.frames - sBattleTiled[bg].frame < 8)
+        goto done;
+    sBattleTiled[bg].frame = sStats.frames | 1;
+    sBattleTiled[bg].full = false;
+    for (unsigned j = 0; j < 20; ++j)
+        for (unsigned k = 0; k < 30; ++k)
+        {
+            entries[j][k] = (uint16_t)MapEntry(map, size, c0 + k, r0 + j);
+            if (EntrySlot(chars, entries[j][k], color256) < 0)
+                goto done;
+        }
+    sBattleTiled[bg].full = true;
+    for (unsigned period = 1; period <= 30; ++period)
+    {
+        bool same = true;
+
+        for (unsigned j = 0; j < 20 && same; ++j)
+            for (unsigned k = 0; k + period < 30 && same; ++k)
+                same = entries[j][k] == entries[j][k + period];
+        if (same) { sBattleTiled[bg].across = (uint8_t)period; break; }
+    }
+    for (unsigned period = 1; period <= 20; ++period)
+    {
+        bool same = true;
+
+        for (unsigned j = 0; j + period < 20 && same; ++j)
+            for (unsigned k = 0; k < 30 && same; ++k)
+                same = entries[j][k] == entries[j + period][k];
+        if (same) { sBattleTiled[bg].down = (uint8_t)period; break; }
+    }
+done:
+    *across = sBattleTiled[bg].across;
+    *down = sBattleTiled[bg].down;
+    return sBattleTiled[bg].full;
+}
+
+/* Tile k of the picture's n (0 its first), carried on by period. */
+static int TiledIndex(int k, int n, int period)
+{
+    if (k >= 0 && k < n) return k;
+    k %= period;
+    return k < 0 ? k + period : k;
+}
+
+static void DrawBattleTiled(unsigned bg, unsigned across, unsigned down)
+{
+    unsigned control = Reg(8 + bg * 2), size = control >> 14;
+    unsigned map = ((control >> 8) & 31) * 0x800;
+    unsigned chars = ((control >> 2) & 3) * 0x4000;
+    bool color256 = (control & 128) != 0;
+    int scrollX = (int)(Reg(0x10 + bg * 4) & 511), scrollY = (int)(Reg(0x12 + bg * 4) & 511);
+    int ox = scrollX & 7, oy = scrollY & 7;
+    int x0 = sClipX0, x1 = sClipX1, y0 = sClipY0, y1 = sClipY1;
+
+    if (!ClipCell(&x0, &x1, &y0, &y1)) return;
+    ViewBase();
+    for (int py = ((y0 + oy) & ~7) - oy; py < y1; py += 8)
+    {
+        /* Tiles from the picture's top-left one, which is at -oy. */
+        int row = TiledIndex((py + oy) >> 3, 20, (int)down);
+
+        for (int px = ((x0 + ox) & ~7) - ox; px < x1; px += 8)
+        {
+            int column = TiledIndex((px + ox) >> 3, 30, (int)across);
+            unsigned entry = MapEntry(map, size, (unsigned)((scrollX >> 3) + column), (unsigned)((scrollY >> 3) + row));
+            int slot = EntrySlot(chars, entry, color256);
+
+            if (slot >= 0)
+                DrawSlot(slot, px + CTR_VIEW_X + sLayerShift, py + CTR_VIEW_Y, entry & 1024, entry & 2048);
+        }
+    }
+}
+
 static void DrawBattleBg(unsigned bg)
 {
     unsigned control = Reg(8 + bg * 2), size = control >> 14;
@@ -1952,7 +2045,16 @@ static void DrawBattleBg(unsigned bg)
     unsigned lastEntry = ~0u;
     int lastSlot = -1;
     bool wraps = columns == 64;
+    unsigned across, down;
 
+    /* A move's background in BG3 (LoadMoveBg) fills only the map's first
+     * 30x20 tiles, the terrain's right half still beyond them: carried on as
+     * its pattern repeats instead (DrawBattleTiled). */
+    if (bg == 3 && CtrBattleBg_MoveBgShown() && BattleTiledBg(bg, &across, &down))
+    {
+        DrawBattleTiled(bg, across, down);
+        return;
+    }
     if (!wraps)
     {
         MeasureStill(bg);
@@ -1960,7 +2062,10 @@ static void DrawBattleBg(unsigned bg)
     }
     if (!wraps)
     {
-        DrawBattleCut(bg, 0, 240, 0, 160, 0);
+        if ((bg == 1 || bg == 2) && BattleTiledBg(bg, &across, &down))
+            DrawBattleTiled(bg, across, down);
+        else
+            DrawBattleCut(bg, 0, 240, 0, 160, 0);
         return;
     }
     if (!ClipCell(&x0, &x1, &y0, &y1)) return;
@@ -4441,7 +4546,17 @@ static void Layers(unsigned mask)
             }
             if (affine && sNavBand && !lines) DrawNavBackmostAffine(bg);
             else if (affine) DrawAffineBg(bg);
-            else if (sBattle && bg == 0) DrawBattleTextLayer(bg);
+            else if (sBattle && bg == 0)
+            {
+                DrawBattleTextLayer(bg);
+                /* A layer in front of the text box - the level-up stats box
+                 * over the message box - that the scene, composed apart, has
+                 * under it: its part over the box drawn again. */
+                for (unsigned front = 1; front < 3; ++front)
+                    if ((sLayerExclude & (1u << front)) && (Reg(0) & (0x100u << front))
+                     && (Reg(8 + front * 2) & 3) < (Reg(8) & 3))
+                        DrawBattleCut(front, 0, 240, 112, 160, 0);
+            }
             else if (bg == 0 && sFieldUi && !sFieldBanner && FindWideBox(bg, &wideBox))
             {
                 /* Above and below the box as ever; the box stretched. */
@@ -5845,7 +5960,12 @@ static void RenderEye(C3D_RenderTarget *target, uint32_t clear, float parallax)
 {
     const Tex3DS_SubTexture logical = {CTR_GAME_WIDTH, CTR_GAME_HEIGHT, 0, 1,
         CTR_GAME_WIDTH / 512.0f, 1 - CTR_GAME_HEIGHT / 256.0f};
-    bool scene = sBattle && sScene;
+    /* At 1:1 the 2D battle needs no surface of its own: composed straight
+     * onto the screen, every layer and sprite in its order and all of the
+     * screen - the surface held only the lowest 128 lines, and a sprite
+     * above them (Skarmory rising) was cut off; and the text box went over
+     * whatever was in front of it (the level-up stats box). */
+    bool scene = sBattle && sScene && sZoom != 1.0f;
 
     sParallax = parallax;
     sLayerShift = 0;
