@@ -196,6 +196,16 @@ void CtrVideo_SetLineRegisters(const uint16_t *regs, unsigned lines);
  * transition's, drawn with it (src/sprite.c). */
 void CtrVideo_ClearScreenOam(void);
 void CtrVideo_MarkScreenOam(unsigned first, unsigned end);
+
+/*
+ * Extra sprite palettes: OAM entries [first, end) drawn with extra palette
+ * `palette` (1..CTR_EXT_OBJ_PALETTES; 0 for their own OBJ palette), so a
+ * sprite needs none of the GBA's 16 - as the PC port's PlatformSetExtObjPalette.
+ * Marks are cleared with the screen marks, every OAM build.
+ */
+#define CTR_EXT_OBJ_PALETTES 4
+void CtrVideo_MarkExtPaletteOam(unsigned first, unsigned end, unsigned palette);
+void CtrVideo_SetExtObjPalette(unsigned index, const uint16_t *colors);
 /* Among those, the ones placed by hand on the 240x160 picture around the
  * player (the healing machine's balls and monitors): drawn where the map has
  * the machine rather than where the window layer has its text. */

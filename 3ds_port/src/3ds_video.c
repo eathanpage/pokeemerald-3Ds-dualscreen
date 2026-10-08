@@ -401,11 +401,32 @@ void CtrVideo_MarkVoxelWeatherOam(unsigned first, unsigned end)
 /* OAM entries of sprites placed on the screen rather than on the map. */
 static uint32_t sScreenOam[4];
 static uint32_t sMachineOam[4];
+/* Each OAM entry's extra palette, 1-based; 0 for its own. Its tiles are
+ * cached as palettes EXT_PALETTE_ID on: 0-15 BG, 16-31 OBJ, 32-33 the 256
+ * colour ones. */
+#define EXT_PALETTE_ID 34
+#define PALETTE_IDS (EXT_PALETTE_ID + CTR_EXT_OBJ_PALETTES)
+static uint8_t sExtPaletteOam[128];
 
 void CtrVideo_ClearScreenOam(void)
 {
     memset(sScreenOam, 0, sizeof(sScreenOam));
     memset(sMachineOam, 0, sizeof(sMachineOam));
+    memset(sExtPaletteOam, 0, sizeof(sExtPaletteOam));
+}
+
+void CtrVideo_MarkExtPaletteOam(unsigned first, unsigned end, unsigned palette)
+{
+    if (end > 128) end = 128;
+    if (palette > CTR_EXT_OBJ_PALETTES) palette = 0;
+    for (unsigned i = first; i < end; ++i)
+        sExtPaletteOam[i] = (uint8_t)palette;
+}
+
+/* The palette an OAM entry's tiles take: its OBJ palette or an extra one. */
+static unsigned ObjBank(unsigned i, unsigned attr2)
+{
+    return sExtPaletteOam[i] ? EXT_PALETTE_ID + sExtPaletteOam[i] - 1u : 16u + (attr2 >> 12);
 }
 
 void CtrVideo_MarkScreenOam(unsigned first, unsigned end)
@@ -481,14 +502,16 @@ static bool sStereo;
 static Tile sTiles[CACHE_COUNT];
 static uint16_t sHash[HASH_COUNT];
 static uint16_t sPalette[512];
-static uint16_t sTexturePalette[512];
+/* Then the extra sprite palettes' colours (EXT_PALETTE_ID on). */
+static uint16_t sTexturePalette[PALETTE_IDS * 16];
 /* Background colours shown transparent, a bit per colour of each BG
  * palette (KeySectionColours). */
 static uint16_t sKeyed[16];
 static uint8_t sMorton[64];
 static C2D_ImageTint sTint;
-static uint32_t sPaletteVersion[34];
-static uint32_t sPaletteChanges[34][8];
+static uint32_t sPaletteVersion[PALETTE_IDS];
+static uint32_t sPaletteChanges[PALETTE_IDS][8];
+static uint16_t sExtPalette[CTR_EXT_OBJ_PALETTES][16];
 static unsigned sUsed;
 
 /*
@@ -954,6 +977,25 @@ static void KeySectionColours(void)
     }
 }
 
+void CtrVideo_SetExtObjPalette(unsigned index, const uint16_t *colors)
+{
+    unsigned id = EXT_PALETTE_ID + index;
+    uint32_t changed = 0;
+
+    if (index >= CTR_EXT_OBJ_PALETTES || !colors) return;
+    for (unsigned i = 0; i < 16; ++i)
+    {
+        if (sExtPalette[index][i] == colors[i]) continue;
+        sExtPalette[index][i] = colors[i];
+        sTexturePalette[id * 16 + i] = CtrVideo_RGBA5551(colors[i]);
+        changed |= 1u << i;
+    }
+    if (!changed) return;
+    memset(sPaletteChanges[id], 0, sizeof(sPaletteChanges[id]));
+    sPaletteChanges[id][0] = changed;
+    ++sPaletteVersion[id];
+}
+
 static bool TilePaletteChanged(const Tile *tile, unsigned paletteId)
 {
     uint32_t version = sPaletteVersion[paletteId];
@@ -961,7 +1003,7 @@ static bool TilePaletteChanged(const Tile *tile, unsigned paletteId)
     /* The last change mask is sufficient only for the next version. Tiles
      * returning after multiple palette changes are conservatively rebuilt. */
     if (tile->paletteVersion + 1 != version) return true;
-    for (unsigned i = 0; i < (paletteId < 32 ? 1u : 8u); ++i)
+    for (unsigned i = 0; i < (paletteId < 32 || paletteId >= EXT_PALETTE_ID ? 1u : 8u); ++i)
         if (tile->colors[i] & sPaletteChanges[paletteId][i]) return true;
     return false;
 }
@@ -986,7 +1028,7 @@ static int GetTileSlot(unsigned address, unsigned bank, bool color256)
         address = 0;
     }
     unsigned paletteId = color256 ? 32 + (bank >= 16) : bank;
-    uint32_t key = (address / 32) * 34 + paletteId + 1;
+    uint32_t key = (address / 32) * PALETTE_IDS + paletteId + 1;
     unsigned hash = (key * 2654435761u) & (HASH_COUNT - 1);
     while (sHash[hash] && sTiles[sHash[hash] - 1].key != key)
         hash = (hash + 1) & (HASH_COUNT - 1);
@@ -4112,7 +4154,7 @@ static void DrawObjects(unsigned priority, bool effects)
                         unsigned sx = flipX ? width / 8 - 1 - tx : tx;
                         unsigned sy = flipY ? height / 8 - 1 - ty : ty;
                         unsigned tile = CtrVideo_ObjTile(attr2 & 1023, sx, sy, width, color256, Reg(0) & 0x40);
-                        int slot = GetTileSlot(0x10000 + tile * 32, 16 + (attr2 >> 12), color256);
+                        int slot = GetTileSlot(0x10000 + tile * 32, ObjBank((unsigned)i, attr2), color256);
 
                         if (slot < 0) continue;
                         ++sStats.tiles;
@@ -4150,7 +4192,7 @@ static void DrawObjects(unsigned priority, bool effects)
                 unsigned sx = flipX ? width / 8 - 1 - tx : tx;
                 unsigned sy = flipY ? height / 8 - 1 - ty : ty;
                 unsigned tile = CtrVideo_ObjTile(attr2 & 1023, sx, sy, width, color256, Reg(0) & 0x40);
-                DrawTile(0x10000 + tile * 32, 16 + (attr2 >> 12), color256,
+                DrawTile(0x10000 + tile * 32, ObjBank((unsigned)i, attr2), color256,
                          (affine ? 0 : x + CTR_VIEW_X + sLayerShift) + (int)tx * 8,
                          (affine ? 0 : y + CTR_VIEW_Y) + (int)ty * 8, flipX, flipY);
             }
