@@ -420,7 +420,7 @@ index b53b69c..38917f3 100644
      {
          return LMAN_ERROR_NOW_LINK_RECOVERY;
 diff --git a/src/battle_controllers.c b/src/battle_controllers.c
-index 602a289..2fd0b0c 100644
+index 602a289..c54279a 100644
 --- a/src/battle_controllers.c
 +++ b/src/battle_controllers.c
 @@ -13,6 +13,47 @@
@@ -606,13 +606,7 @@ index 602a289..2fd0b0c 100644
      {
          if (gTasks[taskId].tCurrentBlock_Start >  gTasks[taskId].tCurrentBlock_End
           && gTasks[taskId].tCurrentBlock_Start == gTasks[taskId].tCurrentBlock_WrapFrom)
-@@ -919,15 +1050,37 @@ static void Task_HandleCopyReceivedLinkBuffersData(u8 taskId)
-         }
-         battler = BYTE_TO_RECEIVE(LINK_BUFF_ACTIVE_BATTLER);
-         blockSize = BYTE_TO_RECEIVE(LINK_BUFF_SIZE_LO) | (BYTE_TO_RECEIVE(LINK_BUFF_SIZE_HI) << 8);
-+        if (!(BYTE_TO_RECEIVE(0) == B_COMM_TO_CONTROLLER && IS_BATTLE_CONTROLLER_ACTIVE_ON_LOCAL(battler)))
- 
-         switch (BYTE_TO_RECEIVE(0))
+@@ -924,10 +1055,31 @@ static void Task_HandleCopyReceivedLinkBuffersData(u8 taskId)
          {
          case B_COMM_TO_CONTROLLER:
              if (IS_BATTLE_CONTROLLER_ACTIVE_ON_LOCAL(battler))
@@ -645,7 +639,7 @@ index 602a289..2fd0b0c 100644
  
              if (!(gBattleTypeFlags & BATTLE_TYPE_IS_MASTER))
              {
-@@ -942,16 +1095,48 @@ static void Task_HandleCopyReceivedLinkBuffersData(u8 taskId)
+@@ -942,16 +1094,48 @@ static void Task_HandleCopyReceivedLinkBuffersData(u8 taskId)
              break;
          case B_COMM_CONTROLLER_IS_DONE:
              playerId = BYTE_TO_RECEIVE(LINK_BUFF_DATA);

@@ -2876,7 +2876,9 @@ static void FastForward(void)
  */
 bool8 CtrBattleMenu_Active(void)
 {
-    return sRes.ready && !(gBattleTypeFlags & (BATTLE_TYPE_LINK | BATTLE_TYPE_RECORDED | BATTLE_TYPE_WALLY_TUTORIAL));
+    /* Link battles too (online play): the local player's controller is the
+     * player's, as in any other battle. */
+    return sRes.ready && !(gBattleTypeFlags & (BATTLE_TYPE_RECORDED | BATTLE_TYPE_WALLY_TUTORIAL));
 }
 
 void CtrBattleMenu_Begin(void)
@@ -2973,8 +2975,10 @@ void CtrBattleMenu_ActionInput(u8 *cursor, bool8 safari)
         *cursor = tap - HIT_ACTION;
         gMain.newKeys |= A_BUTTON;
     }
-    /* BAG and POKéMON open menus that run hidden. */
-    if ((gMain.newKeys & A_BUTTON) && !safari && (*cursor == 1 || *cursor == 2))
+    /* BAG and POKéMON open menus that run hidden. In a link battle the bag
+     * doesn't open (items can't be used): the top shows why instead. */
+    if ((gMain.newKeys & A_BUTTON) && !safari
+     && (*cursor == 2 || (*cursor == 1 && !(gBattleTypeFlags & BATTLE_TYPE_LINK))))
         BeginSession(TRUE);
 }
 
