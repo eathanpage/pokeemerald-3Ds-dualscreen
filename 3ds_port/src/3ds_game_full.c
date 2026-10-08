@@ -288,11 +288,12 @@ void CtrCentredSummary_SetVBlankCallback(IntrCallback callback)
 }
 
 /* The bag from the field goes left of the column, from anywhere else over the
- * whole bottom screen. */
+ * whole bottom screen (3ds_bottom_ui.c, CtrBag_BesideColumn). */
+bool8 CtrBag_BesideColumn(void);
+
 void CtrCentredBag_SetVBlankCallback(IntrCallback callback)
 {
-    SetCentredCallback(callback, gBagPosition.location == ITEMMENULOCATION_FIELD ? CTR_CENTRED_BAG
-                                                                                  : CTR_CENTRED_BAG_WHOLE);
+    SetCentredCallback(callback, CtrBag_BesideColumn() ? CTR_CENTRED_BAG : CTR_CENTRED_BAG_WHOLE);
 }
 
 /* The party menu from the field goes left of the column, from a battle, a

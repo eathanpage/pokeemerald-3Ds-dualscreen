@@ -2761,6 +2761,18 @@ u16 __attribute__((weak)) CtrBattle_QuickBallItem(void)
     return ITEM_NONE;
 }
 
+/*
+ * Whether the bag goes left of the column, with the column beside it: from the
+ * field, and from the party menu there (an item to give a Pokemon) - the
+ * party menu itself is beside it. From anywhere else - a battle, a shop, the
+ * PC - it covers the whole bottom screen.
+ */
+bool8 CtrBag_BesideColumn(void)
+{
+    return !gMain.inBattle
+        && (gBagPosition.location == ITEMMENULOCATION_FIELD || gBagPosition.location == ITEMMENULOCATION_PARTY);
+}
+
 static u8 CurrentMode(void)
 {
     bool8 party;
@@ -3306,7 +3318,7 @@ static void Snapshot(ViewState *s, u8 mode, u8 pressed)
         s->screen = SCR_BAG;
         /* The bag from the field is left of the column; from anything else
          * it covers the column. */
-        s->bagView = gBagPosition.location == ITEMMENULOCATION_FIELD ? BAG_VIEW_SECTION : BAG_VIEW_WHOLE;
+        s->bagView = CtrBag_BesideColumn() ? BAG_VIEW_SECTION : BAG_VIEW_WHOLE;
         if (s->bagView == BAG_VIEW_WHOLE)
             s->screen = SCR_COUNT;
     }
@@ -6581,7 +6593,7 @@ static bool8 ColumnShown(u8 mode)
     case MODE_PARTY_MENU:
         return gPartyMenu.menuType == PARTY_MENU_TYPE_FIELD;
     case MODE_BAG_MENU:
-        return gBagPosition.location == ITEMMENULOCATION_FIELD;
+        return CtrBag_BesideColumn();
     }
     return FALSE;
 }
